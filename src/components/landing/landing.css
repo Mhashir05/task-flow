@@ -1,0 +1,726 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Space+Mono:wght@400;700&display=swap');
+
+/* ============================================================
+   Editorial Task OS — landing-page-scoped design system.
+   All tokens live on `.eos` so nothing here reaches the app shell.
+   Reduced motion: GSAP self-checks in JS; CSS transitions below are
+   covered by the global reduced-motion block in index.css.
+   ============================================================ */
+.eos {
+  --eos-font-display: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
+  --eos-font-mono: 'Space Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+
+  --eos-bg: #f7f4ee;
+  --eos-surface: #fcfaf5;
+  --eos-ink: #16130e;
+  --eos-muted: #5c564c;
+  --eos-line: #d9d2c4;
+  --eos-accent: #1b44ff;
+  --eos-accent-fg: #ffffff;
+
+  --eos-pad-x: clamp(1.25rem, 5vw, 5rem);
+  --eos-section-gap: clamp(3.5rem, 9vw, 8rem);
+  --eos-colhead-min: clamp(72px, 9vw, 92px);
+  --eos-traveler-top: clamp(110px, 14vw, 144px);
+
+  --eos-fs-display: clamp(2.7rem, 10.5vw, 8.5rem);
+  --eos-fs-count: clamp(1.85rem, 4.2vw, 3.4rem);
+  --eos-fs-label: clamp(0.82rem, 1.05vw, 1rem);
+  --eos-fs-micro: 0.72rem;
+
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--eos-bg);
+  color: var(--eos-ink);
+  font-family: var(--eos-font-mono);
+  line-height: 1.45;
+  overflow-x: clip;
+  -webkit-font-smoothing: antialiased;
+}
+
+.eos ::selection {
+  background: var(--eos-accent);
+  color: var(--eos-accent-fg);
+}
+
+.eos :focus-visible {
+  outline: 2px solid var(--eos-accent);
+  outline-offset: 3px;
+}
+
+/* ── Nav ─────────────────────────────────────────────────── */
+.eos-nav {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: clamp(1rem, 2.4vw, 1.6rem) var(--eos-pad-x);
+  border-bottom: 1px solid var(--eos-line);
+}
+
+.eos-wordmark {
+  font-family: var(--eos-font-display);
+  font-weight: 700;
+  font-size: 1rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--eos-ink);
+  text-decoration: none;
+}
+
+.eos-navlinks {
+  display: flex;
+  align-items: baseline;
+  gap: clamp(0.9rem, 2.4vw, 2.25rem);
+}
+
+.eos-navlinks button {
+  font-family: var(--eos-font-mono);
+  font-size: var(--eos-fs-micro);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--eos-muted);
+  background: none;
+  border: none;
+  padding: 0.25rem 0;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease);
+}
+
+.eos-navlinks button:hover {
+  color: var(--eos-ink);
+}
+
+.eos-navlinks .eos-navsignin {
+  color: var(--eos-ink);
+  border-bottom: 1px solid var(--eos-accent);
+}
+
+/* ── Layout shell ────────────────────────────────────────── */
+.eos-main {
+  flex: 1;
+  padding: var(--eos-section-gap) var(--eos-pad-x) calc(var(--eos-section-gap) * 0.7);
+  display: flex;
+  flex-direction: column;
+  gap: var(--eos-section-gap);
+}
+
+.eos-section-label {
+  margin: 0 0 clamp(1.25rem, 3vw, 2.25rem);
+  font-family: var(--eos-font-mono);
+  font-weight: 400;
+  font-size: var(--eos-fs-micro);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--eos-muted);
+  display: flex;
+  gap: 0.6em;
+}
+
+.eos-section-mark {
+  color: var(--eos-ink);
+}
+
+/* ── Hero ────────────────────────────────────────────────── */
+.eos-hero {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  column-gap: clamp(1rem, 2vw, 2rem);
+  row-gap: clamp(1.75rem, 4.5vw, 3.5rem);
+  align-items: stretch;
+}
+
+.eos-hero-kicker {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: var(--eos-fs-micro);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--eos-muted);
+}
+
+.eos-states {
+  grid-column: 1 / span 4;
+  grid-row: 2;
+  display: flex;
+  flex-direction: column;
+}
+
+.eos-hero-masthead {
+  grid-column: 5 / -1;
+  grid-row: 2;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(2rem, 6vw, 4rem);
+}
+
+.eos-hero-title {
+  margin: 0;
+  font-family: var(--eos-font-display);
+  font-weight: 500;
+  font-size: var(--eos-fs-display);
+  line-height: 0.9;
+  letter-spacing: -0.04em;
+  text-transform: uppercase;
+}
+
+.eos-hero-line {
+  display: block;
+  overflow: hidden;
+}
+
+.eos-hero-line > span {
+  display: block;
+  transform: translateY(110%);
+}
+
+.eos-hero-line:last-child > span {
+  color: var(--eos-accent);
+}
+
+.eos [data-hero-fade] {
+  opacity: 0;
+}
+
+.eos-hero-foot {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-5);
+  flex-wrap: wrap;
+}
+
+.eos-hero-support {
+  max-width: 26ch;
+  margin: 0;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--eos-line);
+  font-size: 0.84rem;
+  letter-spacing: 0.02em;
+  color: var(--eos-muted);
+}
+
+.eos-cta {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.5rem 0;
+  font-family: var(--eos-font-mono);
+  font-size: 0.8rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--eos-ink);
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--eos-ink);
+  cursor: pointer;
+  will-change: transform;
+  transition:
+    color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+.eos-cta:hover {
+  color: var(--eos-accent);
+  border-color: var(--eos-accent);
+}
+
+.eos-cta-arrow {
+  transition: transform var(--dur-base) var(--ease);
+}
+
+.eos-cta:hover .eos-cta-arrow {
+  transform: translateX(6px);
+}
+
+/* ── State index (hero left rail) ────────────────────────── */
+.eos-state-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--eos-line);
+}
+
+.eos-state-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: baseline;
+  gap: 0.9rem;
+  padding: clamp(0.7rem, 1.6vw, 1.05rem) 0;
+  border-bottom: 1px solid var(--eos-line);
+  border-left: 0 solid var(--eos-accent);
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-left-width var(--dur-fast) var(--ease),
+    padding-left var(--dur-fast) var(--ease);
+}
+
+.eos-state-row[data-active] {
+  border-left-width: 2px;
+  padding-left: 0.75rem;
+}
+
+.eos-state-index {
+  font-family: var(--eos-font-mono);
+  font-size: var(--eos-fs-micro);
+  letter-spacing: 0.1em;
+  color: var(--eos-muted);
+  transition: color var(--dur-fast) var(--ease);
+}
+
+.eos-state-name {
+  font-family: var(--eos-font-display);
+  font-weight: 500;
+  font-size: var(--eos-fs-label);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  transition: color var(--dur-fast) var(--ease);
+}
+
+.eos-state-count {
+  font-family: var(--eos-font-display);
+  font-weight: 500;
+  font-size: var(--eos-fs-count);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: var(--eos-ink);
+}
+
+.eos-state-row[data-active] .eos-state-name,
+.eos-state-row[data-active] .eos-state-index {
+  color: var(--eos-accent);
+}
+
+.eos-state-hint {
+  margin: 0;
+  margin-top: auto;
+  padding-top: var(--space-5);
+  font-size: var(--eos-fs-micro);
+  letter-spacing: 0.04em;
+  color: var(--eos-muted);
+}
+
+/* ── Board preview (§ 02 Flow) ───────────────────────────── */
+.eos-board-grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  border: 1px solid var(--eos-line);
+}
+
+.eos-col {
+  padding: clamp(0.9rem, 1.8vw, 1.4rem) clamp(0.6rem, 1.4vw, 1.1rem)
+    clamp(1.2rem, 2.4vw, 2rem);
+}
+
+.eos-col:focus-visible {
+  outline: 2px solid var(--eos-accent);
+  outline-offset: -2px;
+}
+
+.eos-col + .eos-col {
+  border-left: 1px solid var(--eos-line);
+}
+
+.eos-col-head {
+  min-height: var(--eos-colhead-min);
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto auto;
+  column-gap: 0.5rem;
+  align-content: start;
+  margin-bottom: clamp(0.75rem, 1.6vw, 1.25rem);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--eos-line);
+}
+
+.eos-col-index {
+  grid-column: 1;
+  font-size: var(--eos-fs-micro);
+  letter-spacing: 0.1em;
+  color: var(--eos-muted);
+}
+
+.eos-col-name {
+  grid-column: 1;
+  font-family: var(--eos-font-display);
+  font-weight: 500;
+  font-size: clamp(0.72rem, 1vw, 0.9rem);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.eos-col-count {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  font-family: var(--eos-font-display);
+  font-weight: 500;
+  font-size: clamp(1.4rem, 2.6vw, 2.1rem);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.eos-col-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(0.5rem, 1.1vw, 0.8rem);
+}
+
+.eos-card {
+  display: block;
+  padding: clamp(0.6rem, 1.2vw, 0.85rem);
+  background: var(--eos-surface);
+  border: 1px solid var(--eos-line);
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    transform var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+
+.eos-col-list .eos-card:hover {
+  border-color: var(--eos-accent);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-sm);
+}
+
+.eos-card-id {
+  font-family: var(--eos-font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
+  color: var(--eos-muted);
+}
+
+.eos-card-title {
+  margin: 0.35rem 0 0;
+  font-family: var(--eos-font-display);
+  font-weight: 400;
+  font-size: 0.8rem;
+  line-height: 1.3;
+  color: var(--eos-ink);
+}
+
+.eos-col-more {
+  padding-top: var(--space-1);
+  font-size: var(--eos-fs-micro);
+  letter-spacing: 0.06em;
+  color: var(--eos-muted);
+}
+
+.eos-traveler {
+  position: absolute;
+  top: var(--eos-traveler-top);
+  left: 0;
+  width: 25%;
+  padding: 0 clamp(0.6rem, 1.4vw, 1.1rem);
+  pointer-events: none;
+  z-index: 3;
+  will-change: transform;
+}
+
+.eos-card--travel {
+  border-left: 2px solid var(--eos-accent);
+  box-shadow: var(--shadow-md);
+}
+
+/* ── About (§ 03 Method) + footer ────────────────────────── */
+.eos-about {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  column-gap: clamp(1rem, 2vw, 2rem);
+  align-items: start;
+}
+
+.eos-about .eos-section-label {
+  grid-column: 1 / span 3;
+}
+
+.eos-about-line {
+  grid-column: 4 / -1;
+  margin: 0;
+  font-family: var(--eos-font-display);
+  font-weight: 400;
+  font-size: clamp(1.1rem, 2.6vw, 1.9rem);
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  color: var(--eos-ink);
+}
+
+.eos-foot {
+  display: flex;
+  gap: 0.6rem;
+  padding: clamp(1.25rem, 3vw, 2rem) var(--eos-pad-x);
+  border-top: 1px solid var(--eos-line);
+  font-size: var(--eos-fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--eos-muted);
+}
+
+/* ── Auth panel — renders the existing AuthScreen unchanged ─ */
+.eos-authdialog {
+  width: 100vw;
+  max-width: 100vw;
+  height: 100dvh;
+  max-height: 100dvh;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  overflow: hidden;
+}
+
+.eos-authdialog::backdrop {
+  background: rgba(22, 19, 14, 0.4);
+  animation: eos-backdrop 0.3s ease both;
+}
+
+@keyframes eos-backdrop {
+  from {
+    opacity: 0;
+  }
+}
+
+.eos-authpanel {
+  position: absolute;
+  inset-block: 0;
+  right: 0;
+  width: min(440px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding: clamp(1.5rem, 4vw, 2.5rem);
+  background: var(--eos-surface);
+  border-left: 1px solid var(--eos-line);
+  overflow-y: auto;
+  transform: translateX(100%);
+  will-change: transform;
+}
+
+.eos-authpanel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.eos-authpanel-label {
+  font-family: var(--eos-font-mono);
+  font-size: var(--eos-fs-micro);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--eos-muted);
+}
+
+.eos-authpanel-close {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+  line-height: 1;
+  background: none;
+  border: 1px solid var(--eos-line);
+  color: var(--eos-ink);
+  cursor: pointer;
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+.eos-authpanel-close:hover {
+  border-color: var(--eos-accent);
+  color: var(--eos-accent);
+}
+
+/* Presentation-only overrides scoped to the panel.
+   AuthScreen.jsx and auth.css are not modified. */
+.eos-authpanel .auth-screen {
+  min-height: 0;
+  padding: 0;
+  background: transparent;
+  display: block;
+}
+
+.eos-authpanel .auth-card {
+  max-width: none;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+  gap: var(--space-2);
+}
+
+.eos-authpanel .auth-brand {
+  font-family: var(--eos-font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--eos-muted);
+}
+
+.eos-authpanel .auth-title {
+  font-family: var(--eos-font-display);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.01em;
+  font-size: clamp(1.4rem, 4vw, 1.85rem);
+  color: var(--eos-ink);
+}
+
+.eos-authpanel .auth-card label {
+  font-family: var(--eos-font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--eos-muted);
+}
+
+.eos-authpanel .auth-card input {
+  border-radius: 0;
+  border-width: 0 0 1px;
+  border-color: var(--eos-line);
+  background: transparent;
+  padding-left: 0;
+  padding-right: 0;
+  color: var(--eos-ink);
+  font-family: var(--eos-font-mono);
+}
+
+.eos-authpanel .auth-card input:focus-visible {
+  box-shadow: none;
+  border-color: var(--eos-accent);
+}
+
+.eos-authpanel .auth-submit {
+  border-radius: 0;
+  background: var(--eos-ink);
+  border-color: var(--eos-ink);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-family: var(--eos-font-mono);
+}
+
+.eos-authpanel .auth-submit:hover:not(:disabled) {
+  background: var(--eos-accent);
+  border-color: var(--eos-accent);
+}
+
+.eos-authpanel .auth-links button {
+  font-family: var(--eos-font-mono);
+  letter-spacing: 0.06em;
+  color: var(--eos-accent);
+}
+
+/* ── Tablet: preserve hierarchy at reduced scale ─────────── */
+@media (max-width: 1024px) {
+  .eos-states {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .eos-hero-masthead {
+    grid-column: 1 / -1;
+    grid-row: 3;
+  }
+
+  .eos-state-list {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    border-top: 1px solid var(--eos-line);
+  }
+
+  .eos-state-row {
+    border-bottom: 1px solid var(--eos-line);
+  }
+
+  .eos-about .eos-section-label,
+  .eos-about-line {
+    grid-column: 1 / -1;
+  }
+}
+
+/* ── Mobile: recomposed, not scaled ──────────────────────── */
+@media (max-width: 640px) {
+  .eos-navlinks button:not(.eos-navsignin) {
+    display: none;
+  }
+
+  .eos-hero {
+    display: flex;
+    flex-direction: column;
+    gap: clamp(1.75rem, 7vw, 2.75rem);
+  }
+
+  .eos-hero-kicker {
+    order: -2;
+  }
+
+  .eos-hero-masthead {
+    order: -1;
+  }
+
+  .eos-hero-title {
+    font-size: clamp(2.6rem, 15vw, 4rem);
+    line-height: 0.95;
+  }
+
+  .eos-hero-foot {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-4);
+  }
+
+  .eos-state-list {
+    display: block;
+  }
+
+  .eos-board-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .eos-col + .eos-col {
+    border-left: none;
+    border-top: 1px solid var(--eos-line);
+  }
+
+  .eos-col-head {
+    min-height: 0;
+  }
+
+  .eos-traveler {
+    display: none;
+  }
+
+  .eos-about {
+    display: block;
+  }
+
+  .eos-authpanel {
+    width: 100%;
+    border-left: none;
+  }
+}
+
+/* Backstop: reveal the JS-animated hero elements and seat the panel even if
+   GSAP's reduced-motion branch does not run. */
+@media (prefers-reduced-motion: reduce) {
+  .eos-hero-line > span {
+    transform: none;
+  }
+
+  .eos [data-hero-fade] {
+    opacity: 1;
+  }
+
+  .eos-authpanel {
+    transform: none;
+  }
+}

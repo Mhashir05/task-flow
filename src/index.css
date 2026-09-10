@@ -1,0 +1,132 @@
+/* ============================================================
+   Design tokens — single source of truth (skill §21)
+   Values declared here even when a later phase applies them.
+   ============================================================ */
+:root {
+  /* Typography */
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial,
+    sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Mono', 'Segoe UI Mono', Consolas,
+    monospace;
+
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+
+  --fs-title: 24px; /* workspace / page title */
+  --fs-section: 18px; /* section headings, brand mark */
+  --fs-card-title: 15px; /* task titles */
+  --fs-body: 14px; /* base body text */
+  --fs-meta: 12px; /* metadata, counts */
+
+  --lh-tight: 1.25;
+  --lh-normal: 1.5;
+
+  /* Color — neutral foundation */
+  --bg: #f6f7f8;
+  --surface: #ffffff;
+  --surface-2: #fbfbfc;
+  --border: #e5e7eb;
+  --border-strong: #d4d7dd;
+  --text: #1f2328;
+  --text-muted: #5b626b;
+  --text-subtle: #868d97;
+
+  /* Color — primary accent */
+  --accent: #2f6feb;
+  --accent-hover: #285fce;
+  --accent-weak: #eef3fd;
+
+  /* Color — destructive */
+  --danger: #c4362f;
+  --danger-weak: #fbeceb;
+
+  /* Color — semantic task status (declared now, applied in Phase 2) */
+  --status-todo: #5b626b;
+  --status-todo-weak: #eceef0;
+  --status-progress: #b06f1c;
+  --status-progress-weak: #fbf1e2;
+  --status-review: #6b4bd8;
+  --status-review-weak: #efecfb;
+  --status-done: #2f8a53;
+  --status-done-weak: #e7f4ec;
+
+  /* Spacing scale (4px base) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 40px;
+
+  /* Border radius */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-pill: 999px;
+
+  /* Elevation */
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.05);
+  --shadow-md: 0 4px 12px rgba(16, 24, 40, 0.08);
+
+  /* Motion */
+  --dur-fast: 130ms;
+  --dur-base: 200ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+
+  /* Layout */
+  --container-max: 1120px;
+
+  color-scheme: light;
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  line-height: var(--lh-normal);
+  color: var(--text);
+  background-color: var(--bg);
+
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* ============================================================
+   Base reset
+   ============================================================ */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+  color: var(--text);
+}
+
+h1 {
+  font-size: var(--fs-title);
+}
+
+h2 {
+  font-size: var(--fs-section);
+}
+
+p {
+  margin: 0;
+}
