@@ -54,7 +54,6 @@ function AuthScreen() {
   return (
     <div className="auth-screen">
       <form className="auth-card" onSubmit={handleSubmit}>
-        <p className="auth-brand">Task Flow</p>
         <h1 className="auth-title">{copy.title}</h1>
 
         <label htmlFor="auth-email">Email</label>

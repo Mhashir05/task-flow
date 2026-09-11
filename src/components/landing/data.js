@@ -8,13 +8,6 @@ export const STATES = [
   { key: 'Done', index: '04' },
 ];
 
-export const STATE_COUNTS = {
-  'To Do': 8,
-  'In Progress': 3,
-  Review: 2,
-  Done: 12,
-};
-
 export const DUMMY_TASKS = {
   'To Do': [
     { id: 'TF-241', title: 'Draft the Q3 roadmap outline' },
