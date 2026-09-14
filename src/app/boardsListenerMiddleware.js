@@ -1,6 +1,10 @@
 import { createListenerMiddleware } from '@reduxjs/toolkit';
 import { authStateChanged } from '../features/auth/authSlice';
-import { boardsCleared, fetchUserBoards } from '../features/boards/boardsSlice';
+import {
+  boardsCleared,
+  fetchJoinedBoards,
+  fetchUserBoards,
+} from '../features/boards/boardsSlice';
 
 export const boardsListenerMiddleware = createListenerMiddleware();
 
@@ -10,6 +14,7 @@ boardsListenerMiddleware.startListening({
     const user = action.payload;
     if (user) {
       dispatch(fetchUserBoards(user.uid));
+      dispatch(fetchJoinedBoards(user.uid));
     } else {
       dispatch(boardsCleared());
     }

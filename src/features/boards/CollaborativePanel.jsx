@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
+import { getMemberRole } from './boardsSlice';
 import {
   approveJoinRequest,
   rejectJoinRequest,
@@ -16,7 +17,8 @@ function CollaborativePanel() {
   const joinError = useSelector((state) => state.joinRequests.error);
 
   const activeBoard = boards.find((b) => b.id === activeBoardId) ?? null;
-  const isOwner = Boolean(activeBoard && activeBoard.ownerId === user?.uid);
+  const myRole = getMemberRole(activeBoard, user?.uid);
+  const canApprove = myRole === 'owner' || myRole === 'admin';
 
   const [inviteCodeInput, setInviteCodeInput] = useState('');
   const [feedback, setFeedback] = useState('');
@@ -88,7 +90,7 @@ function CollaborativePanel() {
         </button>
       </div>
 
-      {isOwner && pendingRequests.length > 0 && (
+      {canApprove && pendingRequests.length > 0 && (
         <div className="join-requests">
           <h3>Pending join requests</h3>
           <ul>

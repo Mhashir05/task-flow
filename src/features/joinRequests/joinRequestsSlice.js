@@ -4,11 +4,9 @@ import {
   arrayUnion,
   collection,
   doc,
-  getDocs,
-  query,
+  getDoc,
   serverTimestamp,
   updateDoc,
-  where,
 } from 'firebase/firestore';
 import { db } from '../../firebase';
 
@@ -16,18 +14,17 @@ export const submitJoinRequest = createAsyncThunk(
   'joinRequests/submitJoinRequest',
   async ({ inviteCode, uid, email }, { rejectWithValue }) => {
     const normalizedCode = inviteCode.trim().toUpperCase();
-    const boardQuery = query(
-      collection(db, 'boards'),
-      where('inviteCode', '==', normalizedCode),
-    );
-    const snapshot = await getDocs(boardQuery);
-    if (snapshot.empty) {
+    // Looked up via the public inviteCodes collection rather than querying
+    // boards directly — boards are member-only readable, so a prospective
+    // joiner (not yet a member) could never find one by invite code
+    // otherwise. See firestore.rules.
+    const codeSnap = await getDoc(doc(db, 'inviteCodes', normalizedCode));
+    if (!codeSnap.exists()) {
       return rejectWithValue('No board found with that invite code.');
     }
 
-    const board = snapshot.docs[0];
     await addDoc(collection(db, 'joinRequests'), {
-      boardId: board.id,
+      boardId: codeSnap.data().boardId,
       requesterUid: uid,
       requesterEmail: email,
       status: 'pending',
@@ -41,6 +38,7 @@ export const approveJoinRequest = createAsyncThunk(
   async ({ requestId, boardId, requesterUid }) => {
     await updateDoc(doc(db, 'boards', boardId), {
       members: arrayUnion(requesterUid),
+      [`roles.${requesterUid}`]: 'member',
     });
     await updateDoc(doc(db, 'joinRequests', requestId), {
       status: 'approved',

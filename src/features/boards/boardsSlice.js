@@ -1,13 +1,28 @@
 import { createAsyncThunk, createSlice } from '@reduxjs/toolkit';
 import {
+  arrayRemove,
   collection,
+  deleteField,
   doc,
   getDocs,
   query,
   setDoc,
+  updateDoc,
   where,
 } from 'firebase/firestore';
 import { db } from '../../firebase';
+
+// Resolves a member's role with a fallback for boards created before the
+// roles map existed: the owner defaults to 'owner' and anyone else in
+// `members` defaults to 'member', so pre-existing collaborative boards
+// keep working instead of locking their owner out of owner-only actions.
+export function getMemberRole(board, uid) {
+  if (!board || !uid) return null;
+  if (board.roles?.[uid]) return board.roles[uid];
+  if (board.ownerId === uid) return 'owner';
+  if (board.members?.includes(uid)) return 'member';
+  return null;
+}
 
 const INVITE_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no ambiguous chars
 
@@ -49,13 +64,19 @@ export const getOrCreateCollaborativeBoard = createAsyncThunk(
       boardId = existingSnap.docs[0].id;
     } else {
       const boardRef = doc(collection(db, 'boards'));
+      const inviteCode = generateInviteCode();
       await setDoc(boardRef, {
         name: 'Team Board',
         ownerId: uid,
         type: 'collaborative',
         members: [uid],
-        inviteCode: generateInviteCode(),
+        roles: { [uid]: 'owner' },
+        inviteCode,
       });
+      // Public-lookup record so a non-member can resolve an invite code to
+      // a boardId without needing read access to the board document itself
+      // (boards are member-only readable — see firestore.rules).
+      await setDoc(doc(db, 'inviteCodes', inviteCode), { boardId: boardRef.id });
       boardId = boardRef.id;
     }
     // Keep boards.list in sync so the new/existing collaborative board is
@@ -66,35 +87,76 @@ export const getOrCreateCollaborativeBoard = createAsyncThunk(
   },
 );
 
-// The Collaborative tab / "Make Collaborative" action both need "the"
-// collaborative board for this user, and that isn't necessarily one they
-// own — they may have been approved onto someone else's board instead.
-// getOrCreateCollaborativeBoard only ever checked ownerId, so a member
-// (non-owner) would never be found and would silently get a brand new,
-// disconnected board created for them instead. Check membership first.
-//
-// Design note: if a user is BOTH the owner of their own collaborative
-// board AND a member of someone else's (via approval), this prioritizes
-// the joined board over their own owned one. Supporting a user belonging
-// to multiple collaborative boards at once — and picking between them —
-// is out of scope for now; this just picks a reasonable single board
-// rather than breaking.
-export const resolveCollaborativeBoard = createAsyncThunk(
-  'boards/resolveCollaborativeBoard',
-  async (uid, { dispatch }) => {
+// Boards the user belongs to but does NOT own — i.e. joined via an
+// approved join request. Kept separate from getOrCreateCollaborativeBoard
+// (which only ever resolves/creates the board the user owns) so "my board"
+// and "boards I've joined" stay distinct concepts with their own UI.
+export const fetchJoinedBoards = createAsyncThunk(
+  'boards/fetchJoinedBoards',
+  async (uid) => {
     const memberQuery = query(
       collection(db, 'boards'),
       where('members', 'array-contains', uid),
-      where('type', '==', 'collaborative'),
     );
-    const memberSnap = await getDocs(memberQuery);
-    if (!memberSnap.empty) {
-      const joined = memberSnap.docs.find((d) => d.data().ownerId !== uid);
-      return (joined ?? memberSnap.docs[0]).id;
+    const snapshot = await getDocs(memberQuery);
+    return snapshot.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .filter((b) => b.ownerId !== uid);
+  },
+);
+
+// Owner-only. Client-side gate here is a stopgap until matching Firestore
+// Security Rules exist — this check is not itself the security boundary.
+export const updateMemberRole = createAsyncThunk(
+  'boards/updateMemberRole',
+  async ({ boardId, targetUid, newRole }, { getState, dispatch, rejectWithValue }) => {
+    if (newRole !== 'admin' && newRole !== 'member') {
+      return rejectWithValue('Invalid role.');
     }
-    // Not a member of any collaborative board at all — fall back to the
-    // owner-only lookup/create path.
-    return dispatch(getOrCreateCollaborativeBoard(uid)).unwrap();
+    const currentUid = getState().auth.user?.uid;
+    const board = getState().boards.list.find((b) => b.id === boardId);
+    if (!board) return rejectWithValue('Board not found.');
+    if (getMemberRole(board, currentUid) !== 'owner') {
+      return rejectWithValue('Only the board owner can change member roles.');
+    }
+    if (targetUid === board.ownerId) {
+      return rejectWithValue("The board owner's role cannot be changed.");
+    }
+
+    await updateDoc(doc(db, 'boards', boardId), {
+      [`roles.${targetUid}`]: newRole,
+    });
+    await dispatch(fetchUserBoards(currentUid));
+  },
+);
+
+// Owner can remove anyone (except themself); admin can only remove plain
+// members, not the owner or other admins. Same "client-side stopgap until
+// Security Rules" caveat as updateMemberRole above.
+export const removeMember = createAsyncThunk(
+  'boards/removeMember',
+  async ({ boardId, targetUid }, { getState, dispatch, rejectWithValue }) => {
+    const currentUid = getState().auth.user?.uid;
+    const board = getState().boards.list.find((b) => b.id === boardId);
+    if (!board) return rejectWithValue('Board not found.');
+    if (targetUid === board.ownerId) {
+      return rejectWithValue('The board owner cannot be removed.');
+    }
+
+    const currentRole = getMemberRole(board, currentUid);
+    const targetRole = getMemberRole(board, targetUid);
+    const canRemove =
+      currentRole === 'owner' ||
+      (currentRole === 'admin' && targetRole === 'member');
+    if (!canRemove) {
+      return rejectWithValue('You do not have permission to remove this member.');
+    }
+
+    await updateDoc(doc(db, 'boards', boardId), {
+      members: arrayRemove(targetUid),
+      [`roles.${targetUid}`]: deleteField(),
+    });
+    await dispatch(fetchUserBoards(currentUid));
   },
 );
 
@@ -121,6 +183,7 @@ const boardsSlice = createSlice({
   name: 'boards',
   initialState: {
     list: [],
+    joined: [],
     activeBoardId: null,
     status: 'idle', // 'idle' | 'loading'
   },
@@ -130,6 +193,7 @@ const boardsSlice = createSlice({
     },
     boardsCleared: (state) => {
       state.list = [];
+      state.joined = [];
       state.activeBoardId = null;
     },
   },
@@ -144,6 +208,9 @@ const boardsSlice = createSlice({
       })
       .addCase(fetchUserBoards.rejected, (state) => {
         state.status = 'idle';
+      })
+      .addCase(fetchJoinedBoards.fulfilled, (state, action) => {
+        state.joined = action.payload;
       });
   },
 });

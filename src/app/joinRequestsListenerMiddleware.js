@@ -2,7 +2,11 @@ import { createListenerMiddleware } from '@reduxjs/toolkit';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { db } from '../firebase';
 import { authStateChanged } from '../features/auth/authSlice';
-import { fetchUserBoards } from '../features/boards/boardsSlice';
+import {
+  fetchJoinedBoards,
+  fetchUserBoards,
+  getMemberRole,
+} from '../features/boards/boardsSlice';
 import {
   pendingRequestsCleared,
   pendingRequestsReceived,
@@ -10,8 +14,8 @@ import {
 
 export const joinRequestsListenerMiddleware = createListenerMiddleware();
 
-// Owner view: pending join requests for whichever board is active, but only
-// when the current user actually owns it.
+// Owner/admin view: pending join requests for whichever board is active,
+// but only when the current user's role there can act on them.
 let unsubscribePending = null;
 
 joinRequestsListenerMiddleware.startListening({
@@ -29,7 +33,8 @@ joinRequestsListenerMiddleware.startListening({
       (b) => b.id === state.boards.activeBoardId,
     );
 
-    if (!uid || !board || board.ownerId !== uid) {
+    const role = getMemberRole(board, uid);
+    if (!uid || !board || (role !== 'owner' && role !== 'admin')) {
       listenerApi.dispatch(pendingRequestsCleared());
       return;
     }
@@ -78,6 +83,7 @@ joinRequestsListenerMiddleware.startListening({
 
       if (justApproved) {
         listenerApi.dispatch(fetchUserBoards(user.uid));
+        listenerApi.dispatch(fetchJoinedBoards(user.uid));
       }
     });
   },

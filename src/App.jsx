@@ -7,11 +7,12 @@ import { logOut } from './features/auth/authSlice';
 import { fetchProfile } from './features/profile/profileSlice';
 import {
   activeBoardSet,
+  getOrCreateCollaborativeBoard,
   getUserPrivateBoard,
-  resolveCollaborativeBoard,
 } from './features/boards/boardsSlice';
 import CollaborativePanel from './features/boards/CollaborativePanel';
 import BoardMembers from './features/boards/BoardMembers';
+import JoinedBoardsSelect from './features/boards/JoinedBoardsSelect';
 
 const PRIORITIES = [
   { name: 'urgent', color: '#9C4A44' },
@@ -93,7 +94,7 @@ function App() {
   function handleSelectBoardContext(context) {
     if (!user?.uid || context === boardContext) return;
     const thunk =
-      context === 'collaborative' ? resolveCollaborativeBoard : getUserPrivateBoard;
+      context === 'collaborative' ? getOrCreateCollaborativeBoard : getUserPrivateBoard;
     dispatch(thunk(user.uid))
       .unwrap()
       .then((boardId) => dispatch(activeBoardSet(boardId)))
@@ -229,6 +230,7 @@ function App() {
         >
           Collaborative
         </button>
+        <JoinedBoardsSelect />
       </div>
 
       <div className="view-toggle" role="group" aria-label="Select view">

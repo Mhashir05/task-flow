@@ -1,0 +1,132 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Mirrors the client's getMemberRole() fallback in boardsSlice.js: an
+    // explicit roles map entry wins; otherwise the board owner defaults to
+    // 'owner' and any other member defaults to 'member' (covers boards
+    // created before the roles map existed, e.g. private boards, which
+    // never get a roles map at all).
+    function roleOf(board, uid) {
+      return uid in board.get('roles', {})
+        ? board.roles[uid]
+        : (board.ownerId == uid
+            ? 'owner'
+            : (uid in board.members ? 'member' : null));
+    }
+
+    function isMember(board, uid) {
+      return uid in board.members;
+    }
+
+    // Approximation of "admin added a new member or removed an existing
+    // one, but did not reassign an existing member's role" — see the note
+    // on the boards/update rule below for the tradeoff this makes.
+    function isSafeAdminRolesChange(before, after) {
+      let d = after.get('roles', {}).diff(before.get('roles', {}));
+      return d.changedKeys().size() == 0
+        && (d.addedKeys().size() + d.removedKeys().size()) <= 1;
+    }
+
+    match /boards/{boardId} {
+      allow read: if isSignedIn() && isMember(resource.data, request.auth.uid);
+
+      allow create: if isSignedIn()
+        && request.auth.uid in request.resource.data.members;
+
+      // Any member may update the board EXCEPT the roles map. A roles
+      // change is allowed if the actor's own CURRENT role (from the
+      // existing document, not the incoming write) is 'owner' — full
+      // access, including reassigning anyone between admin/member — OR if
+      // it's an admin performing a single add-member/remove-member
+      // (isSafeAdminRolesChange).
+      //
+      // Tradeoff: Firestore rules have no generic way to inspect the VALUE
+      // of a dynamically-keyed added map entry without iteration, which
+      // this language doesn't support. isSafeAdminRolesChange verifies an
+      // admin's write touches at most one roles entry and does not modify
+      // an EXISTING member's value, but it cannot verify that a newly
+      // ADDED entry's value is specifically 'member' rather than 'admin'.
+      // In practice this means a compromised or buggy admin client could
+      // add a brand-new member directly as 'admin' (bypassing the
+      // owner-only promotion path) in the same write that adds them to
+      // members — but they still cannot touch any EXISTING member's role,
+      // and cannot do this to more than one uid per write. Closing this
+      // fully would require either a Cloud Function to validate the write,
+      // or restructuring role assignment (e.g. new members always land as
+      // 'member' via a server-controlled process) outside pure rules.
+      allow update: if isSignedIn()
+        && isMember(resource.data, request.auth.uid)
+        && (
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny(['roles'])
+          || roleOf(resource.data, request.auth.uid) == 'owner'
+          || (
+            roleOf(resource.data, request.auth.uid) == 'admin'
+            && isSafeAdminRolesChange(resource.data, request.resource.data)
+          )
+        );
+
+      allow delete: if isSignedIn() && isMember(resource.data, request.auth.uid);
+    }
+
+    match /tasks/{taskId} {
+      function boardMembers(boardId) {
+        return get(/databases/$(database)/documents/boards/$(boardId)).data.members;
+      }
+
+      allow read, update, delete: if isSignedIn()
+        && request.auth.uid in boardMembers(resource.data.boardId);
+
+      allow create: if isSignedIn()
+        && request.auth.uid in boardMembers(request.resource.data.boardId);
+    }
+
+    match /users/{uid} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && request.auth.uid == uid;
+    }
+
+    // Public lookup table so a non-member can resolve an invite code to a
+    // boardId without needing read access to the board itself (boards are
+    // member-only readable, above). Written only at board-creation time by
+    // getOrCreateCollaborativeBoard.
+    match /inviteCodes/{code} {
+      allow read: if isSignedIn();
+
+      allow create: if isSignedIn()
+        && roleOf(
+             get(/databases/$(database)/documents/boards/$(request.resource.data.boardId)).data,
+             request.auth.uid
+           ) == 'owner';
+
+      allow update, delete: if isSignedIn()
+        && roleOf(
+             get(/databases/$(database)/documents/boards/$(resource.data.boardId)).data,
+             request.auth.uid
+           ) == 'owner';
+    }
+
+    match /joinRequests/{requestId} {
+      function boardOf(boardId) {
+        return get(/databases/$(database)/documents/boards/$(boardId)).data;
+      }
+
+      allow create: if isSignedIn()
+        && request.resource.data.requesterUid == request.auth.uid;
+
+      allow read: if isSignedIn()
+        && (
+          resource.data.requesterUid == request.auth.uid
+          || roleOf(boardOf(resource.data.boardId), request.auth.uid) in ['owner', 'admin']
+        );
+
+      allow update: if isSignedIn()
+        && roleOf(boardOf(resource.data.boardId), request.auth.uid) in ['owner', 'admin'];
+    }
+  }
+}
