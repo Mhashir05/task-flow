@@ -7,8 +7,8 @@ import { logOut } from './features/auth/authSlice';
 import { fetchProfile } from './features/profile/profileSlice';
 import {
   activeBoardSet,
-  getOrCreateCollaborativeBoard,
   getUserPrivateBoard,
+  resolveCollaborativeBoard,
 } from './features/boards/boardsSlice';
 import CollaborativePanel from './features/boards/CollaborativePanel';
 import BoardMembers from './features/boards/BoardMembers';
@@ -93,7 +93,7 @@ function App() {
   function handleSelectBoardContext(context) {
     if (!user?.uid || context === boardContext) return;
     const thunk =
-      context === 'collaborative' ? getOrCreateCollaborativeBoard : getUserPrivateBoard;
+      context === 'collaborative' ? resolveCollaborativeBoard : getUserPrivateBoard;
     dispatch(thunk(user.uid))
       .unwrap()
       .then((boardId) => dispatch(activeBoardSet(boardId)))

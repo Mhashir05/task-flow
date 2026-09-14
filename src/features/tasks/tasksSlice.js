@@ -2,8 +2,8 @@ import { createAsyncThunk, createSlice } from '@reduxjs/toolkit';
 import { deleteDoc, doc, setDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../../firebase';
 import {
-  getOrCreateCollaborativeBoard,
   getUserPrivateBoard,
+  resolveCollaborativeBoard,
 } from '../boards/boardsSlice';
 
 // Writes go straight to Firestore; the visible state change comes back
@@ -48,7 +48,7 @@ export const moveTaskToCollaborative = createAsyncThunk(
   'tasks/moveTaskToCollaborative',
   async ({ taskId, uid }, { dispatch }) => {
     const boardId = await dispatch(
-      getOrCreateCollaborativeBoard(uid),
+      resolveCollaborativeBoard(uid),
     ).unwrap();
     await updateDoc(doc(db, 'tasks', taskId), { boardId });
   },

@@ -66,6 +66,38 @@ export const getOrCreateCollaborativeBoard = createAsyncThunk(
   },
 );
 
+// The Collaborative tab / "Make Collaborative" action both need "the"
+// collaborative board for this user, and that isn't necessarily one they
+// own — they may have been approved onto someone else's board instead.
+// getOrCreateCollaborativeBoard only ever checked ownerId, so a member
+// (non-owner) would never be found and would silently get a brand new,
+// disconnected board created for them instead. Check membership first.
+//
+// Design note: if a user is BOTH the owner of their own collaborative
+// board AND a member of someone else's (via approval), this prioritizes
+// the joined board over their own owned one. Supporting a user belonging
+// to multiple collaborative boards at once — and picking between them —
+// is out of scope for now; this just picks a reasonable single board
+// rather than breaking.
+export const resolveCollaborativeBoard = createAsyncThunk(
+  'boards/resolveCollaborativeBoard',
+  async (uid, { dispatch }) => {
+    const memberQuery = query(
+      collection(db, 'boards'),
+      where('members', 'array-contains', uid),
+      where('type', '==', 'collaborative'),
+    );
+    const memberSnap = await getDocs(memberQuery);
+    if (!memberSnap.empty) {
+      const joined = memberSnap.docs.find((d) => d.data().ownerId !== uid);
+      return (joined ?? memberSnap.docs[0]).id;
+    }
+    // Not a member of any collaborative board at all — fall back to the
+    // owner-only lookup/create path.
+    return dispatch(getOrCreateCollaborativeBoard(uid)).unwrap();
+  },
+);
+
 // Every user has exactly one private board (created at signup/login by
 // ensureDefaultBoard in authSlice.js) — look it up fresh from Firestore
 // rather than trusting cached Redux state, same as the collaborative thunk.
