@@ -1,68 +1,75 @@
-import { createSlice } from '@reduxjs/toolkit';
+import { createAsyncThunk, createSlice } from '@reduxjs/toolkit';
+import { deleteDoc, doc, setDoc, updateDoc } from 'firebase/firestore';
+import { db } from '../../firebase';
+import {
+  getOrCreateCollaborativeBoard,
+  getUserPrivateBoard,
+} from '../boards/boardsSlice';
 
-const STATUSES = ['To Do', 'In Progress', 'Review', 'Done'];
+// Writes go straight to Firestore; the visible state change comes back
+// through the onSnapshot listener in ../../app/tasksListenerMiddleware.js,
+// not from these thunks or any reducer here.
 
-const loadTasks = () => {
-  const saved = localStorage.getItem('tasks');
-  if (!saved) {
-    return [
-      {
-        id: 1,
-        title: 'Sample Task',
-        description: 'This is a sample task description.',
-        status: 'To Do',
-        dueDate: '',
-        priority: 'Medium',
-      },
-    ];
-  }
-  const parsed = JSON.parse(saved);
-  if (!Array.isArray(parsed)) return [];
-  // Drop entries with a duplicate id (legacy Date.now() collisions),
-  // which otherwise inflate the task count and break edit/delete targeting.
-  const seen = new Set();
-  return parsed
-    .filter((task) => {
-      if (seen.has(task.id)) return false;
-      seen.add(task.id);
-      return true;
-    })
-    // Reconcile legacy/blank/unknown status values to a valid column so that
-    // every counted task renders in exactly one column.
-    .map((task) =>
-      STATUSES.includes(task.status) ? task : { ...task, status: 'To Do' },
-    );
-};
+export const addTask = createAsyncThunk(
+  'tasks/addTask',
+  async (task, { getState }) => {
+    const userId = getState().auth.user?.uid;
+    const { id, ...rest } = task;
+    await setDoc(doc(db, 'tasks', id), { ...rest, userId });
+  },
+);
+
+export const deleteTask = createAsyncThunk('tasks/deleteTask', async (id) => {
+  await deleteDoc(doc(db, 'tasks', id));
+});
+
+export const updateStatus = createAsyncThunk(
+  'tasks/updateStatus',
+  async ({ id, newStatus }) => {
+    await updateDoc(doc(db, 'tasks', id), { status: newStatus });
+  },
+);
+
+export const editTitle = createAsyncThunk(
+  'tasks/editTitle',
+  async ({ id, newTitle }) => {
+    await updateDoc(doc(db, 'tasks', id), { title: newTitle });
+  },
+);
+
+export const editDescription = createAsyncThunk(
+  'tasks/editDescription',
+  async ({ id, newDescription }) => {
+    await updateDoc(doc(db, 'tasks', id), { description: newDescription });
+  },
+);
+
+export const moveTaskToCollaborative = createAsyncThunk(
+  'tasks/moveTaskToCollaborative',
+  async ({ taskId, uid }, { dispatch }) => {
+    const boardId = await dispatch(
+      getOrCreateCollaborativeBoard(uid),
+    ).unwrap();
+    await updateDoc(doc(db, 'tasks', taskId), { boardId });
+  },
+);
+
+export const moveTaskToPrivate = createAsyncThunk(
+  'tasks/moveTaskToPrivate',
+  async ({ taskId, uid }, { dispatch }) => {
+    const boardId = await dispatch(getUserPrivateBoard(uid)).unwrap();
+    await updateDoc(doc(db, 'tasks', taskId), { boardId });
+  },
+);
 
 const tasksSlice = createSlice({
   name: 'tasks',
-  initialState: loadTasks(),
+  initialState: [],
   reducers: {
-    addTask: (state, action) => {
-      state.push(action.payload);
-    },
-    deleteTask: (state, action) => {
-      return state.filter((task) => task.id !== action.payload);
-    },
-    updateStatus: (state, action) => {
-      const { id, newStatus } = action.payload;
-      const task = state.find((t) => t.id === id);
-      if (task) task.status = newStatus;
-    },
-    editTitle: (state, action) => {
-      const { id, newTitle } = action.payload;
-      const task = state.find((t) => t.id === id);
-      if (task) task.title = newTitle;
-    },
-    editDescription: (state, action) => {
-      const { id, newDescription } = action.payload;
-      const task = state.find((t) => t.id === id);
-      if (task) task.description = newDescription;
-    },
+    tasksReceived: (_state, action) => action.payload,
+    tasksCleared: () => [],
   },
 });
 
-export const { addTask, deleteTask, updateStatus, editTitle, editDescription } =
-  tasksSlice.actions;
-
+export const { tasksReceived, tasksCleared } = tasksSlice.actions;
 export default tasksSlice.reducer;

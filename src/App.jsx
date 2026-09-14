@@ -1,9 +1,17 @@
 import './App.css';
 import { useEffect, useRef, useState } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
-import { addTask, deleteTask, updateStatus, editTitle, editDescription } from './features/tasks/tasksSlice';
+import { Link } from 'react-router-dom';
+import { addTask, deleteTask, updateStatus, editTitle, editDescription, moveTaskToCollaborative, moveTaskToPrivate } from './features/tasks/tasksSlice';
 import { logOut } from './features/auth/authSlice';
-import UsersFeed from './components/UsersFeed';
+import { fetchProfile } from './features/profile/profileSlice';
+import {
+  activeBoardSet,
+  getOrCreateCollaborativeBoard,
+  getUserPrivateBoard,
+} from './features/boards/boardsSlice';
+import CollaborativePanel from './features/boards/CollaborativePanel';
+import BoardMembers from './features/boards/BoardMembers';
 
 const PRIORITIES = [
   { name: 'urgent', color: '#9C4A44' },
@@ -21,7 +29,22 @@ function makeId() {
 
 function App() {
   const tasks = useSelector((state) => state.tasks);
+  const user = useSelector((state) => state.auth.user);
+  const profileData = useSelector((state) => state.profile.data);
+  const boards = useSelector((state) => state.boards.list);
+  const activeBoardId = useSelector((state) => state.boards.activeBoardId);
   const dispatch = useDispatch();
+  const emailFallback = user?.email ? user.email.split('@')[0] : 'there';
+  const displayName =
+    profileData?.displayName && profileData.displayName.trim() !== ''
+      ? profileData.displayName
+      : emailFallback;
+
+  const activeBoard = boards.find((b) => b.id === activeBoardId) ?? null;
+  // Which top-level context is selected — derived from the board itself
+  // (via type) rather than tracked as separate state, so it can never get
+  // out of sync with activeBoardId.
+  const boardContext = activeBoard?.type ?? 'private';
 
   const [newTitle, setNewTitle] = useState('');
   const [newDescription, setNewDescription] = useState('');
@@ -37,6 +60,26 @@ function App() {
   const titleRef = useRef(null);
   const cancelConfirmRef = useRef(null);
 
+  // Team has no purpose on a private board (single member, the owner) — a
+  // stale 'users' selection just renders as Board instead, no effect needed
+  // to "correct" it since nothing is ever actually stored as wrong.
+  const effectiveView = boardContext === 'private' ? 'board' : view;
+
+  useEffect(() => {
+    if (user?.uid && !profileData) dispatch(fetchProfile(user.uid));
+  }, [dispatch, user?.uid, profileData]);
+
+  // Default to the user's private board the first time nothing is selected
+  // yet. Looked up live via the thunk rather than waiting on boards.list, so
+  // it doesn't depend on fetchUserBoards having already resolved.
+  useEffect(() => {
+    if (!user?.uid || activeBoardId) return;
+    dispatch(getUserPrivateBoard(user.uid))
+      .unwrap()
+      .then((boardId) => dispatch(activeBoardSet(boardId)))
+      .catch(() => {});
+  }, [dispatch, user?.uid, activeBoardId]);
+
   useEffect(() => {
     if (!feedback) return;
     const timer = setTimeout(() => setFeedback(''), 2500);
@@ -47,12 +90,23 @@ function App() {
     if (confirmingId !== null) cancelConfirmRef.current?.focus();
   }, [confirmingId]);
 
+  function handleSelectBoardContext(context) {
+    if (!user?.uid || context === boardContext) return;
+    const thunk =
+      context === 'collaborative' ? getOrCreateCollaborativeBoard : getUserPrivateBoard;
+    dispatch(thunk(user.uid))
+      .unwrap()
+      .then((boardId) => dispatch(activeBoardSet(boardId)))
+      .catch(() => setFeedback('Could not switch boards. Try again.'));
+  }
+
   function handleAddTask() {
     if (newTitle.trim() === '') {
       setTitleError('Please enter a task title.');
       titleRef.current?.focus();
       return;
     }
+    if (!activeBoardId) return;
     const newTask = {
       id: makeId(),
       title: newTitle,
@@ -60,6 +114,7 @@ function App() {
       status: 'To Do',
       dueDate: newDueDate,
       priority: newPriority,
+      boardId: activeBoardId,
     };
     dispatch(addTask(newTask));
     setNewTitle('');
@@ -88,6 +143,18 @@ function App() {
     dispatch(editDescription({ id, newDescription }));
   }
 
+  function handleMakeCollaborative(id) {
+    if (!user?.uid) return;
+    dispatch(moveTaskToCollaborative({ taskId: id, uid: user.uid }));
+    setFeedback('Task moved to your collaborative board');
+  }
+
+  function handleMakePrivate(id) {
+    if (!user?.uid) return;
+    dispatch(moveTaskToPrivate({ taskId: id, uid: user.uid }));
+    setFeedback('Task moved to your private board');
+  }
+
   function toggleExpand(id) {
     setExpandedId(expandedId === id ? null : id);
   }
@@ -108,18 +175,34 @@ function App() {
     { name: 'Done', dot: 'var(--status-done)' },
   ];
 
-  const doneCount = tasks.filter((t) => t.status === 'Done').length;
-  const totalCount = tasks.length;
+  // Scope tasks to whichever board the Private/Collaborative tab currently
+  // points at. A task with no boardId is legacy/implicit-private, so it
+  // still shows up under the private board.
+  const visibleTasks = tasks.filter((t) =>
+    boardContext === 'private'
+      ? !t.boardId || t.boardId === activeBoardId
+      : t.boardId === activeBoardId,
+  );
+
+  const doneCount = visibleTasks.filter((t) => t.status === 'Done').length;
+  const totalCount = visibleTasks.length;
   const progressPercent =
     totalCount === 0 ? 0 : Math.round((doneCount / totalCount) * 100);
 
   return (
     <div className="page">
       <header className="topbar">
-        <div className="logo">
-          TASK FLOW
+        <div className="brand">
+          <div className="logo">
+            TASK FLOW
+          </div>
+          <p className="tagline">Keep it moving. Enhance productivity.</p>
         </div>
-        <p className="tagline">Keep it moving. Enhance productivity.</p>
+        <p className="welcome-greet">
+          Welcome back, <strong>{displayName}</strong>
+          {' · '}
+          <Link to="/dashboard/profile">Profile</Link>
+        </p>
         <button
           type="button"
           className="sign-out"
@@ -129,27 +212,50 @@ function App() {
         </button>
       </header>
 
+      <div className="view-toggle" role="group" aria-label="Select board">
+        <button
+          type="button"
+          className={boardContext === 'private' ? 'active' : ''}
+          aria-pressed={boardContext === 'private'}
+          onClick={() => handleSelectBoardContext('private')}
+        >
+          Private
+        </button>
+        <button
+          type="button"
+          className={boardContext === 'collaborative' ? 'active' : ''}
+          aria-pressed={boardContext === 'collaborative'}
+          onClick={() => handleSelectBoardContext('collaborative')}
+        >
+          Collaborative
+        </button>
+      </div>
+
       <div className="view-toggle" role="group" aria-label="Select view">
         <button
           type="button"
-          className={view === 'board' ? 'active' : ''}
-          aria-pressed={view === 'board'}
+          className={effectiveView === 'board' ? 'active' : ''}
+          aria-pressed={effectiveView === 'board'}
           onClick={() => setView('board')}
         >
           Board
         </button>
-        <button
-          type="button"
-          className={view === 'users' ? 'active' : ''}
-          aria-pressed={view === 'users'}
-          onClick={() => setView('users')}
-        >
-          Users
-        </button>
+        {boardContext === 'collaborative' && (
+          <button
+            type="button"
+            className={effectiveView === 'users' ? 'active' : ''}
+            aria-pressed={effectiveView === 'users'}
+            onClick={() => setView('users')}
+          >
+            Team
+          </button>
+        )}
       </div>
 
-      {view === 'users' ? (
-        <UsersFeed />
+      {boardContext === 'collaborative' && <CollaborativePanel />}
+
+      {effectiveView === 'users' ? (
+        <BoardMembers />
       ) : (
         <>
       <div className="progress-panel">
@@ -259,19 +365,23 @@ function App() {
               ></span>
               <h2>{status.name}</h2>
               <span className="count">
-                {tasks.filter((t) => t.status === status.name).length}
+                {visibleTasks.filter((t) => t.status === status.name).length}
               </span>
             </div>
 
-            {tasks.filter((t) => t.status === status.name).length === 0 && (
+            {visibleTasks.filter((t) => t.status === status.name).length ===
+              0 && (
               <div className="empty-state">
                 <p>No tasks in {status.name}</p>
               </div>
             )}
 
-            {tasks
+            {visibleTasks
               .filter((task) => task.status === status.name)
-              .map((task) => (
+              .map((task) => {
+                const isPrivateTask =
+                  !task.boardId || task.boardId === profileData?.defaultBoardId;
+                return (
                 <div
                   className={`quest-card${
                     draggedId === task.id ? ' quest-card--dragging' : ''
@@ -317,6 +427,17 @@ function App() {
                     <span className="priority-badge">
                       {task.priority || 'Medium'}
                     </span>
+                    <button
+                      type="button"
+                      className="make-collaborative"
+                      onClick={() =>
+                        isPrivateTask
+                          ? handleMakeCollaborative(task.id)
+                          : handleMakePrivate(task.id)
+                      }
+                    >
+                      {isPrivateTask ? 'Make Collaborative' : 'Make Private'}
+                    </button>
                     {confirmingId === task.id ? (
                       <div
                         className="card-confirm"
@@ -391,7 +512,8 @@ function App() {
                     </div>
                   )}
                 </div>
-              ))}
+                );
+              })}
           </div>
         ))}
       </div>

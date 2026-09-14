@@ -18,7 +18,7 @@ function TaskBoardPreview() {
     const narrow = window.matchMedia('(max-width: 640px)').matches;
 
     const ctx = gsap.context(() => {
-      if (prefersReduced || narrow) return;
+      if (prefersReduced) return;
       const t = travelerRef.current;
       if (!t) return;
 
@@ -32,6 +32,25 @@ function TaskBoardPreview() {
         );
       };
 
+      // Narrow: columns stack vertically with uneven heights (different
+      // task counts per state), so a fixed percentage can't locate them.
+      // Each stop is a function GSAP re-invokes live every time it plays —
+      // including every repeat of the infinite loop — so it can't drift
+      // out of alignment after a late webfont swap, a resize, or an
+      // orientation change the way a one-time measurement would.
+      const axisProp = narrow ? 'y' : 'xPercent';
+      const offsetOf = (key) => {
+        const el = colRefs.current[key];
+        if (!el || !gridRef.current) return 0;
+        return (
+          el.getBoundingClientRect().top -
+          gridRef.current.getBoundingClientRect().top
+        );
+      };
+      const targets = narrow
+        ? STATES.map((s) => () => offsetOf(s.key))
+        : [0, 100, 200, 300];
+
       const hold = 1;
       const move = 0.72;
       const tl = gsap.timeline({
@@ -39,16 +58,16 @@ function TaskBoardPreview() {
         repeatDelay: 2,
         defaults: { ease: 'power2.inOut' },
       });
-      tl.set(t, { xPercent: 0, opacity: 0 })
+      tl.set(t, { [axisProp]: targets[0], opacity: 0 })
         .to(t, { opacity: 1, duration: 0.35, ease: 'power2.out' })
         .to(t, { duration: hold })
-        .to(t, { xPercent: 100, duration: move })
+        .to(t, { [axisProp]: targets[1], duration: move })
         .call(pulse, ['In Progress'])
         .to(t, { duration: hold })
-        .to(t, { xPercent: 200, duration: move })
+        .to(t, { [axisProp]: targets[2], duration: move })
         .call(pulse, ['Review'])
         .to(t, { duration: hold })
-        .to(t, { xPercent: 300, duration: move })
+        .to(t, { [axisProp]: targets[3], duration: move })
         .call(pulse, ['Done'])
         .to(t, { duration: hold })
         .to(t, { opacity: 0, duration: 0.35, ease: 'power2.in' });

@@ -7,6 +7,7 @@ import { authStateChanged } from './authSlice';
 import App from '../../App.jsx';
 import LandingPage from '../../components/LandingPage.jsx';
 import ProtectedRoute from '../../components/ProtectedRoute.jsx';
+import ProfilePage from '../profile/ProfilePage.jsx';
 import './auth.css';
 
 function AuthGate() {
@@ -40,6 +41,14 @@ function AuthGate() {
         element={
           <ProtectedRoute>
             <App />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/dashboard/profile"
+        element={
+          <ProtectedRoute>
+            <ProfilePage />
           </ProtectedRoute>
         }
       />

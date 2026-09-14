@@ -5,10 +5,31 @@ import {
   signInWithEmailAndPassword,
   signOut,
 } from 'firebase/auth';
-import { auth } from '../../firebase';
+import { collection, doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
+import { auth, db } from '../../firebase';
 
 const serializeUser = (user) =>
   user ? { uid: user.uid, email: user.email } : null;
+
+// Shared by signup and login: guarantees uid has a defaultBoardId, creating
+// a private board on the fly for any account that doesn't have one yet
+// (pre-existing accounts from before the boards feature) — no migration
+// script needed.
+async function ensureDefaultBoard(uid) {
+  const userRef = doc(db, 'users', uid);
+  const userSnap = await getDoc(userRef);
+  if (userSnap.exists() && userSnap.data().defaultBoardId) return;
+
+  const boardRef = doc(collection(db, 'boards'));
+  await setDoc(boardRef, {
+    name: 'My Board',
+    ownerId: uid,
+    type: 'private',
+    members: [uid],
+    createdAt: serverTimestamp(),
+  });
+  await setDoc(userRef, { defaultBoardId: boardRef.id }, { merge: true });
+}
 
 function mapAuthError(err) {
   switch (err?.code) {
@@ -38,6 +59,13 @@ export const signUp = createAsyncThunk(
   async ({ email, password }, { rejectWithValue }) => {
     try {
       const cred = await createUserWithEmailAndPassword(auth, email, password);
+      await setDoc(doc(db, 'users', cred.user.uid), {
+        uid: cred.user.uid,
+        email: cred.user.email,
+        displayName: '',
+        createdAt: serverTimestamp(),
+      });
+      await ensureDefaultBoard(cred.user.uid);
       return serializeUser(cred.user);
     } catch (err) {
       return rejectWithValue(mapAuthError(err));
@@ -50,6 +78,7 @@ export const logIn = createAsyncThunk(
   async ({ email, password }, { rejectWithValue }) => {
     try {
       const cred = await signInWithEmailAndPassword(auth, email, password);
+      await ensureDefaultBoard(cred.user.uid);
       return serializeUser(cred.user);
     } catch (err) {
       return rejectWithValue(mapAuthError(err));
