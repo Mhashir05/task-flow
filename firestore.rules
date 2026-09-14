@@ -34,7 +34,24 @@ service cloud.firestore {
     }
 
     match /boards/{boardId} {
-      allow read: if isSignedIn() && isMember(resource.data, request.auth.uid);
+      // The isMember branch covers queries filtered by
+      // where('members', 'array-contains', uid) — Firestore can prove that
+      // holds for every possible result directly from the query's own
+      // filter. The ownerId branch exists because two client queries
+      // (getOrCreateCollaborativeBoard's and getUserPrivateBoard's
+      // existing-board lookups) filter by where('ownerId', '==', uid)
+      // instead — a field the isMember check never references, so
+      // Firestore can't verify isMember would hold for every possible
+      // match and rejects the whole query, even though ownerId always
+      // implies membership in this app's actual data. Firestore's query
+      // validator doesn't trust that invariant — it only accepts a rule it
+      // can prove straight from the query's declared filters, so ownerId
+      // needs its own directly-provable branch.
+      allow read: if isSignedIn()
+        && (
+          isMember(resource.data, request.auth.uid)
+          || resource.data.ownerId == request.auth.uid
+        );
 
       allow create: if isSignedIn()
         && request.auth.uid in request.resource.data.members;
@@ -75,15 +92,123 @@ service cloud.firestore {
     }
 
     match /tasks/{taskId} {
-      function boardMembers(boardId) {
-        return get(/databases/$(database)/documents/boards/$(boardId)).data.members;
+      function boardOfTask(boardId) {
+        return get(/databases/$(database)/documents/boards/$(boardId)).data;
       }
 
-      allow read, update, delete: if isSignedIn()
-        && request.auth.uid in boardMembers(resource.data.boardId);
+      function isTaskBoardMember(boardId, uid) {
+        return uid in boardOfTask(boardId).members;
+      }
+
+      // A member's comment write must add exactly one comment and leave
+      // every existing one untouched. hasAll() proves nothing existing was
+      // removed or altered; combined with the exact size-delta-of-1, that
+      // proves it's a pure append rather than a same-length replacement.
+      // (It does not strictly prove order was preserved, but a reorder
+      // can't be used to tamper with or fabricate comment content, so
+      // that's an acceptable gap, not a security hole.)
+      function isMemberCommentAppend(before, after) {
+        return after.diff(before).affectedKeys().hasOnly(['comments'])
+          && after.comments.size() == before.get('comments', []).size() + 1
+          && after.comments.hasAll(before.get('comments', []));
+      }
+
+      // A member's statusRequest write must go from null/absent to a new
+      // request naming THEMSELVES as the requester (so they can't spoof a
+      // request as coming from someone else) — never overwriting an
+      // existing pending request. Clearing one back to null (approve or
+      // reject) is owner/admin-only, via the role branch below.
+      function isMemberStatusRequest(before, after) {
+        return after.diff(before).affectedKeys().hasOnly(['statusRequest'])
+          && before.get('statusRequest', null) == null
+          && after.statusRequest != null
+          && after.statusRequest.requestedBy == request.auth.uid;
+      }
+
+      // Editing exactly one comment's text, changing nothing else.
+      // list.removeAll(list) is value-based (not index-based): it returns
+      // the elements of the left list that are NOT present, by value,
+      // anywhere in the right list. For a pure single-comment edit with
+      // nothing else touched:
+      //   - "removed" (before.removeAll(after)) is the one old comment
+      //     object that no longer exists unchanged anywhere in `after`.
+      //   - "added" (after.removeAll(before)) is the one new comment
+      //     object that didn't exist unchanged anywhere in `before`.
+      // Both must have exactly one element (proving only one entry
+      // changed at all — editing two comments in one write, or any other
+      // shape, fails this), and that pair must share uid/createdAt/email
+      // with the acting user matching the ORIGINAL uid (so you can only
+      // edit your own comment, and can't reassign a comment to a
+      // different uid/createdAt/email while editing).
+      function isOwnCommentEdit(before, after) {
+        let beforeComments = before.get('comments', []);
+        let afterComments = after.get('comments', []);
+        let removed = beforeComments.removeAll(afterComments);
+        let added = afterComments.removeAll(beforeComments);
+        return after.diff(before).affectedKeys().hasOnly(['comments'])
+          && beforeComments.size() == afterComments.size()
+          && removed.size() == 1
+          && added.size() == 1
+          && removed[0].uid == request.auth.uid
+          && added[0].uid == removed[0].uid
+          && added[0].createdAt == removed[0].createdAt
+          && added[0].email == removed[0].email;
+      }
+
+      // Deleting exactly one comment (array shrinks by exactly one, with
+      // nothing added — ruling out a "remove one, add a different one"
+      // swap dressed up as a delete). Allowed if the removed comment
+      // belongs to the actor (self-delete) or the actor is owner/admin
+      // (moderation delete). The owner/admin case is already covered
+      // unconditionally by the role branch in allow update below, so this
+      // half of the OR is redundant in practice today — kept anyway so
+      // this function is correct and reusable on its own terms, per spec,
+      // rather than silently depending on being combined with that branch.
+      function isCommentDelete(before, after, board, uid) {
+        let beforeComments = before.get('comments', []);
+        let afterComments = after.get('comments', []);
+        let removed = beforeComments.removeAll(afterComments);
+        let added = afterComments.removeAll(beforeComments);
+        return after.diff(before).affectedKeys().hasOnly(['comments'])
+          && beforeComments.size() == afterComments.size() + 1
+          && removed.size() == 1
+          && added.size() == 0
+          && (removed[0].uid == uid || roleOf(board, uid) in ['owner', 'admin']);
+      }
+
+      allow read, delete: if isSignedIn()
+        && isTaskBoardMember(resource.data.boardId, request.auth.uid);
 
       allow create: if isSignedIn()
-        && request.auth.uid in boardMembers(request.resource.data.boardId);
+        && isTaskBoardMember(request.resource.data.boardId, request.auth.uid);
+
+      // Owner/admin: full access to any field (status changes, editing,
+      // approving/rejecting a request, etc.) — same as before this feature.
+      // Plain member: restricted to EXACTLY one of the two safe shapes
+      // above; every other field (status, title, description, boardId, ...)
+      // is off-limits to them entirely. Because affectedKeys() only
+      // contains fields whose VALUE actually changed, a member cannot
+      // bundle a real status change into an otherwise-allowed write: doing
+      // so adds 'status' to affectedKeys(), which fails hasOnly(['comments'])
+      // / hasOnly(['statusRequest']) immediately — there is no shape of
+      // request that both changes status and satisfies either branch.
+      // Private boards are unaffected: a private board's sole member has no
+      // roles map, and roleOf()'s fallback resolves ownerId == uid to
+      // 'owner', so they always take the unrestricted branch.
+      allow update: if isSignedIn()
+        && isTaskBoardMember(resource.data.boardId, request.auth.uid)
+        && (
+          roleOf(boardOfTask(resource.data.boardId), request.auth.uid) in ['owner', 'admin']
+          || isMemberCommentAppend(resource.data, request.resource.data)
+          || isMemberStatusRequest(resource.data, request.resource.data)
+          || isOwnCommentEdit(resource.data, request.resource.data)
+          || isCommentDelete(
+               resource.data,
+               request.resource.data,
+               boardOfTask(resource.data.boardId),
+               request.auth.uid
+             )
+        );
     }
 
     match /users/{uid} {

@@ -2,17 +2,22 @@ import './App.css';
 import { useEffect, useRef, useState } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import { Link } from 'react-router-dom';
-import { addTask, deleteTask, updateStatus, editTitle, editDescription, moveTaskToCollaborative, moveTaskToPrivate } from './features/tasks/tasksSlice';
+import { doc, getDoc } from 'firebase/firestore';
+import { db } from './firebase';
+import { addTask, deleteTask, updateStatus, editTitle, editDescription, moveTaskToCollaborative, moveTaskToPrivate, addComment, editComment, deleteComment, requestStatusChange, approveStatusRequest, rejectStatusRequest } from './features/tasks/tasksSlice';
 import { logOut } from './features/auth/authSlice';
 import { fetchProfile } from './features/profile/profileSlice';
 import {
   activeBoardSet,
+  getMemberRole,
   getOrCreateCollaborativeBoard,
   getUserPrivateBoard,
 } from './features/boards/boardsSlice';
 import CollaborativePanel from './features/boards/CollaborativePanel';
 import BoardMembers from './features/boards/BoardMembers';
 import JoinedBoardsSelect from './features/boards/JoinedBoardsSelect';
+
+const ROLE_LABEL = { owner: 'Owner', admin: 'Admin', member: 'Member' };
 
 const PRIORITIES = [
   { name: 'urgent', color: '#9C4A44' },
@@ -46,6 +51,31 @@ function App() {
   // (via type) rather than tracked as separate state, so it can never get
   // out of sync with activeBoardId.
   const boardContext = activeBoard?.type ?? 'private';
+  const myRole = getMemberRole(activeBoard, user?.uid);
+  // Status changes — via the dropdown OR drag-and-drop — are restricted to
+  // Owner/Admin only on a collaborative board. Private boards (and their
+  // sole member, the owner) are always unrestricted. This is a single
+  // board-wide value, not per-task, so it's computed once here rather than
+  // per task in the render loop below.
+  const canManageStatus =
+    boardContext !== 'collaborative' || myRole === 'owner' || myRole === 'admin';
+
+  // TEMPORARY DEBUG LOGGING — remove once the Approve/Reject visibility
+  // issue is diagnosed.
+  useEffect(() => {
+    console.log(
+      '[App] uid =',
+      user?.uid,
+      '| activeBoardId =',
+      activeBoardId,
+      '| boardContext =',
+      boardContext,
+      '| myRole =',
+      myRole,
+      '| canManageStatus =',
+      canManageStatus,
+    );
+  }, [user?.uid, activeBoardId, boardContext, myRole, canManageStatus]);
 
   const [newTitle, setNewTitle] = useState('');
   const [newDescription, setNewDescription] = useState('');
@@ -58,6 +88,20 @@ function App() {
   const [titleError, setTitleError] = useState('');
   const [feedback, setFeedback] = useState('');
   const [confirmingId, setConfirmingId] = useState(null);
+  // Per-task, keyed by task id — a member's in-progress status pick before
+  // they click "Request", and their draft comment text.
+  const [pendingSelections, setPendingSelections] = useState({});
+  const [commentDrafts, setCommentDrafts] = useState({});
+  // Which single comment (across all tasks) is currently open for inline
+  // editing, identified by the same createdAt+uid pair used everywhere
+  // else instead of array index, plus its in-progress edited text.
+  const [editingComment, setEditingComment] = useState(null);
+  const [editDraft, setEditDraft] = useState('');
+  // uid -> { email, displayName } for commenters on the currently expanded
+  // task, resolved live from users/{uid} (not stored on the comment itself,
+  // so a later name change shows correctly on old comments). Cached across
+  // renders so each uid is only fetched once, not once per comment.
+  const [commenterProfiles, setCommenterProfiles] = useState({});
   const titleRef = useRef(null);
   const cancelConfirmRef = useRef(null);
 
@@ -69,6 +113,40 @@ function App() {
   useEffect(() => {
     if (user?.uid && !profileData) dispatch(fetchProfile(user.uid));
   }, [dispatch, user?.uid, profileData]);
+
+  // Batch-resolve commenter profiles for whichever task is expanded — one
+  // getDoc per unique uid not already cached, not one per comment.
+  useEffect(() => {
+    if (!expandedId) return;
+    const expandedTask = tasks.find((t) => t.id === expandedId);
+    const uniqueUids = [
+      ...new Set((expandedTask?.comments ?? []).map((c) => c.uid)),
+    ].filter((uid) => !commenterProfiles[uid]);
+    if (uniqueUids.length === 0) return;
+
+    let cancelled = false;
+    Promise.all(
+      uniqueUids.map((uid) =>
+        getDoc(doc(db, 'users', uid)).then((snap) => [
+          uid,
+          {
+            email: snap.exists() ? snap.data().email : uid,
+            displayName: snap.exists() ? snap.data().displayName : '',
+          },
+        ]),
+      ),
+    ).then((pairs) => {
+      if (cancelled) return;
+      setCommenterProfiles((prev) => ({
+        ...prev,
+        ...Object.fromEntries(pairs),
+      }));
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [expandedId, tasks, commenterProfiles]);
 
   // Default to the user's private board the first time nothing is selected
   // yet. Looked up live via the thunk rather than waiting on boards.list, so
@@ -156,13 +234,86 @@ function App() {
     setFeedback('Task moved to your private board');
   }
 
+  function handleAddComment(taskId) {
+    const text = (commentDrafts[taskId] ?? '').trim();
+    if (!text || !user?.uid) return;
+    dispatch(addComment({ taskId, uid: user.uid, email: user.email, text }));
+    setCommentDrafts((prev) => ({ ...prev, [taskId]: '' }));
+  }
+
+  function handleStartEditComment(taskId, comment) {
+    setEditingComment({ taskId, uid: comment.uid, createdAt: comment.createdAt });
+    setEditDraft(comment.text);
+  }
+
+  function handleCancelEditComment() {
+    setEditingComment(null);
+    setEditDraft('');
+  }
+
+  function handleSaveComment(taskId, comment) {
+    const newText = editDraft.trim();
+    if (!newText) return;
+    dispatch(
+      editComment({
+        taskId,
+        createdAt: comment.createdAt,
+        uid: comment.uid,
+        newText,
+      }),
+    );
+    setEditingComment(null);
+    setEditDraft('');
+  }
+
+  function handleDeleteComment(taskId, comment) {
+    dispatch(
+      deleteComment({ taskId, createdAt: comment.createdAt, uid: comment.uid }),
+    );
+  }
+
+  function handleRequestStatusChange(taskId, requestedStatus) {
+    if (!user?.uid) return;
+    dispatch(
+      requestStatusChange({
+        taskId,
+        uid: user.uid,
+        email: user.email,
+        requestedStatus,
+      }),
+    )
+      .unwrap()
+      .then(() => setFeedback('Status change requested'))
+      .catch((message) => setFeedback(message || 'Could not submit request.'));
+  }
+
+  function handleApproveStatusRequest(task) {
+    dispatch(
+      approveStatusRequest({
+        taskId: task.id,
+        newStatus: task.statusRequest.requestedStatus,
+      }),
+    );
+    setFeedback('Status change approved');
+  }
+
+  function handleRejectStatusRequest(taskId) {
+    dispatch(rejectStatusRequest({ taskId }));
+    setFeedback('Status change request rejected');
+  }
+
   function toggleExpand(id) {
     setExpandedId(expandedId === id ? null : id);
   }
 
   function handleDrop(e, statusName) {
     e.preventDefault();
-    if (draggedId !== null) {
+    // Cards are already non-draggable when !canManageStatus (see the
+    // quest-card's draggable attribute below), so this normally never
+    // fires for a restricted member — this is a defense-in-depth guard in
+    // case a drop event ever lands anyway (stale drag state, browser
+    // quirk), not the primary mechanism.
+    if (canManageStatus && draggedId !== null) {
       handleStatusChange(draggedId, statusName);
     }
     setDraggedId(null);
@@ -383,13 +534,27 @@ function App() {
               .map((task) => {
                 const isPrivateTask =
                   !task.boardId || task.boardId === profileData?.defaultBoardId;
+                const comments = task.comments ?? [];
+                const statusRequest = task.statusRequest ?? null;
+
+                // TEMPORARY DEBUG LOGGING — remove once the Approve/Reject
+                // visibility issue is diagnosed.
+                console.log(
+                  '[App] task',
+                  task.id,
+                  '| boardId =',
+                  task.boardId,
+                  '| statusRequest =',
+                  statusRequest,
+                );
+
                 return (
                 <div
                   className={`quest-card${
                     draggedId === task.id ? ' quest-card--dragging' : ''
                   }`}
                   key={task.id}
-                  draggable
+                  draggable={canManageStatus}
                   onDragStart={() => setDraggedId(task.id)}
                   onDragEnd={() => {
                     setDraggedId(null);
@@ -413,6 +578,7 @@ function App() {
                       className="card-status"
                       aria-label={`Status for ${task.title}`}
                       value={task.status}
+                      disabled={!canManageStatus}
                       onChange={(e) =>
                         handleStatusChange(task.id, e.target.value)
                       }
@@ -423,6 +589,66 @@ function App() {
                         </option>
                       ))}
                     </select>
+                    {canManageStatus && statusRequest && (
+                      <span className="status-request-actions">
+                        <span className="status-pending">
+                          Requested: &rarr; {statusRequest.requestedStatus}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleApproveStatusRequest(task)}
+                        >
+                          Approve
+                        </button>
+                        <button
+                          type="button"
+                          className="danger"
+                          onClick={() => handleRejectStatusRequest(task.id)}
+                        >
+                          Reject
+                        </button>
+                      </span>
+                    )}
+                    {!canManageStatus &&
+                      (statusRequest ? (
+                        <span className="status-pending" aria-disabled="true">
+                          Pending: &rarr; {statusRequest.requestedStatus}
+                        </span>
+                      ) : (
+                        <span className="status-request-form">
+                          <select
+                            aria-label={`Request new status for ${task.title}`}
+                            value={pendingSelections[task.id] ?? task.status}
+                            onChange={(e) =>
+                              setPendingSelections((prev) => ({
+                                ...prev,
+                                [task.id]: e.target.value,
+                              }))
+                            }
+                          >
+                            {statuses.map((s) => (
+                              <option key={s.name} value={s.name}>
+                                {s.name}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            disabled={
+                              (pendingSelections[task.id] ?? task.status) ===
+                              task.status
+                            }
+                            onClick={() =>
+                              handleRequestStatusChange(
+                                task.id,
+                                pendingSelections[task.id] ?? task.status,
+                              )
+                            }
+                          >
+                            Request
+                          </button>
+                        </span>
+                      ))}
                     {task.dueDate && (
                       <span className="due-date">{task.dueDate}</span>
                     )}
@@ -501,6 +727,7 @@ function App() {
                       <select
                         aria-label="Change task status"
                         value={task.status}
+                        disabled={!canManageStatus}
                         onChange={(e) =>
                           handleStatusChange(task.id, e.target.value)
                         }
@@ -511,6 +738,148 @@ function App() {
                           </option>
                         ))}
                       </select>
+
+                      <div className="task-comments">
+                        <h4>Comments</h4>
+                        {comments.length === 0 && (
+                          <p className="task-comments-empty">No comments yet.</p>
+                        )}
+                        <ul>
+                          {comments.map((comment, i) => {
+                            const isAuthor = comment.uid === user?.uid;
+                            const canEditComment = isAuthor;
+                            const canDeleteComment =
+                              isAuthor ||
+                              myRole === 'owner' ||
+                              myRole === 'admin';
+                            const isEditingThis =
+                              editingComment?.taskId === task.id &&
+                              editingComment?.uid === comment.uid &&
+                              editingComment?.createdAt === comment.createdAt;
+
+                            // Resolved live, same pattern as the header's
+                            // own displayName/emailFallback — never stored
+                            // on the comment itself, so a later name/role
+                            // change shows correctly on old comments too.
+                            const commenterProfile =
+                              commenterProfiles[comment.uid];
+                            const commenterEmail =
+                              commenterProfile?.email ?? comment.email;
+                            const commenterEmailFallback = commenterEmail
+                              ? commenterEmail.split('@')[0]
+                              : comment.uid;
+                            const commenterDisplayName =
+                              commenterProfile?.displayName &&
+                              commenterProfile.displayName.trim() !== ''
+                                ? commenterProfile.displayName
+                                : commenterEmailFallback;
+                            const commenterRole =
+                              getMemberRole(activeBoard, comment.uid) ??
+                              'member';
+
+                            return (
+                              <li key={`${comment.createdAt}-${i}`}>
+                                {isEditingThis ? (
+                                  <span className="comment-edit-form">
+                                    <input
+                                      aria-label="Edit comment"
+                                      value={editDraft}
+                                      onChange={(e) =>
+                                        setEditDraft(e.target.value)
+                                      }
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                          handleSaveComment(task.id, comment);
+                                        }
+                                        if (e.key === 'Escape') {
+                                          handleCancelEditComment();
+                                        }
+                                      }}
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        handleSaveComment(task.id, comment)
+                                      }
+                                    >
+                                      Save
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={handleCancelEditComment}
+                                    >
+                                      Cancel
+                                    </button>
+                                  </span>
+                                ) : (
+                                  <>
+                                    <strong title={commenterEmail}>
+                                      {commenterDisplayName} (
+                                      {ROLE_LABEL[commenterRole] ??
+                                        commenterRole}
+                                      )
+                                    </strong>{' '}
+                                    &mdash; {comment.text}
+                                    {(canEditComment || canDeleteComment) && (
+                                      <span className="comment-actions">
+                                        {canEditComment && (
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              handleStartEditComment(
+                                                task.id,
+                                                comment,
+                                              )
+                                            }
+                                          >
+                                            Edit
+                                          </button>
+                                        )}
+                                        {canDeleteComment && (
+                                          <button
+                                            type="button"
+                                            className="danger"
+                                            onClick={() =>
+                                              handleDeleteComment(
+                                                task.id,
+                                                comment,
+                                              )
+                                            }
+                                          >
+                                            Delete
+                                          </button>
+                                        )}
+                                      </span>
+                                    )}
+                                  </>
+                                )}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                        <div className="task-comment-form">
+                          <input
+                            aria-label="Add a comment"
+                            value={commentDrafts[task.id] ?? ''}
+                            onChange={(e) =>
+                              setCommentDrafts((prev) => ({
+                                ...prev,
+                                [task.id]: e.target.value,
+                              }))
+                            }
+                            placeholder="Add a comment"
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') handleAddComment(task.id);
+                            }}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleAddComment(task.id)}
+                          >
+                            Comment
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>

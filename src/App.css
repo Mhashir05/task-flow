@@ -664,6 +664,155 @@ input, select, button, textarea {
 
 .card-details textarea { resize: vertical; }
 
+.status-pending {
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.status-request-actions,
+.status-request-form {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.status-request-actions button,
+.status-request-form button {
+  height: 28px;
+  padding: 0 var(--space-2);
+  font-size: var(--fs-meta);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.status-request-actions button.danger {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: #fff;
+}
+
+.status-request-actions button:disabled,
+.status-request-form button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.status-request-form select {
+  height: 28px;
+  font-size: var(--fs-meta);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.task-comments {
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.task-comments h4 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+
+.task-comments-empty {
+  margin: 0 0 var(--space-2);
+  font-size: var(--fs-meta);
+  color: var(--text-subtle);
+}
+
+.task-comments ul {
+  list-style: none;
+  margin: 0 0 var(--space-2);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--fs-meta);
+  color: var(--text);
+}
+
+.task-comment-form {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.task-comment-form input {
+  flex: 1;
+  margin-bottom: 0 !important;
+}
+
+.task-comment-form button {
+  height: 36px;
+  padding: 0 var(--space-3);
+  font-size: 13px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.comment-actions {
+  display: inline-flex;
+  gap: var(--space-1);
+  margin-left: var(--space-2);
+}
+
+.comment-actions button {
+  height: 22px;
+  padding: 0 var(--space-2);
+  font-size: 11px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text-muted);
+}
+
+.comment-actions button.danger {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: #fff;
+}
+
+.comment-edit-form {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  width: 100%;
+}
+
+.comment-edit-form input {
+  flex: 1;
+  height: 28px;
+  padding: 0 var(--space-2);
+  font-size: 13px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.comment-edit-form button {
+  height: 28px;
+  padding: 0 var(--space-2);
+  font-size: 11px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+}
+
 
 /* ── UsersFeed (same visual system) ─────────────────────── */
 .users-feed {

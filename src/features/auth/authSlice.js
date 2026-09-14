@@ -15,10 +15,20 @@ const serializeUser = (user) =>
 // a private board on the fly for any account that doesn't have one yet
 // (pre-existing accounts from before the boards feature) — no migration
 // script needed.
-async function ensureDefaultBoard(uid) {
+async function ensureDefaultBoard(uid, email) {
   const userRef = doc(db, 'users', uid);
   const userSnap = await getDoc(userRef);
-  if (userSnap.exists() && userSnap.data().defaultBoardId) return;
+  const userData = userSnap.exists() ? userSnap.data() : null;
+
+  // Backfill a missing email field — e.g. an account created directly via
+  // Firebase Console's "Add user", which never goes through signUp's own
+  // setDoc below and so has no email in Firestore at all. Without this,
+  // BoardMembers.jsx shows a blank/undefined email on the Team tab.
+  if (email && !userData?.email) {
+    await setDoc(userRef, { email }, { merge: true });
+  }
+
+  if (userData?.defaultBoardId) return;
 
   const boardRef = doc(collection(db, 'boards'));
   await setDoc(boardRef, {
@@ -65,7 +75,7 @@ export const signUp = createAsyncThunk(
         displayName: '',
         createdAt: serverTimestamp(),
       });
-      await ensureDefaultBoard(cred.user.uid);
+      await ensureDefaultBoard(cred.user.uid, cred.user.email);
       return serializeUser(cred.user);
     } catch (err) {
       return rejectWithValue(mapAuthError(err));
@@ -78,7 +88,7 @@ export const logIn = createAsyncThunk(
   async ({ email, password }, { rejectWithValue }) => {
     try {
       const cred = await signInWithEmailAndPassword(auth, email, password);
-      await ensureDefaultBoard(cred.user.uid);
+      await ensureDefaultBoard(cred.user.uid, cred.user.email);
       return serializeUser(cred.user);
     } catch (err) {
       return rejectWithValue(mapAuthError(err));

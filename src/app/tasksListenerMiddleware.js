@@ -34,10 +34,26 @@ tasksListenerMiddleware.startListening({
       collection(db, 'tasks'),
       where('boardId', '==', boardId),
     );
-    unsubscribeTasks = onSnapshot(tasksQuery, (snapshot) => {
-      listenerApi.dispatch(
-        tasksReceived(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
-      );
-    });
+    unsubscribeTasks = onSnapshot(
+      tasksQuery,
+      (snapshot) => {
+        listenerApi.dispatch(
+          tasksReceived(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
+        );
+      },
+      (error) => {
+        // TEMPORARY DEBUG LOGGING — remove once the empty-Collaborative-tasks
+        // issue is diagnosed. onSnapshot silently drops errors with no
+        // callback here, which is exactly what could hide a permission-denied
+        // from the boardId-scoped query's Security Rules.
+        console.log(
+          '[tasksListenerMiddleware] onSnapshot ERROR | boardId =',
+          boardId,
+          '| uid =',
+          user.uid,
+          error,
+        );
+      },
+    );
   },
 });
