@@ -3,8 +3,11 @@ import { useEffect, useRef, useState } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import { Link } from 'react-router-dom';
 import { doc, getDoc } from 'firebase/firestore';
+import gsap from 'gsap';
+import { ScrollTrigger } from 'gsap/ScrollTrigger';
+import Lenis from 'lenis';
 import { db } from './firebase';
-import { addTask, deleteTask, updateStatus, editTitle, editDescription, moveTaskToCollaborative, moveTaskToPrivate, addComment, editComment, deleteComment, requestStatusChange, approveStatusRequest, rejectStatusRequest } from './features/tasks/tasksSlice';
+import { addTask, deleteTask, updateStatus, editTitle, editDescription, moveTaskToCollaborative, moveTaskToPrivate, addComment, editComment, deleteComment, requestStatusChange, approveStatusRequest, rejectStatusRequest, assignTask, requestDelete, approveDeleteRequest, rejectDeleteRequest } from './features/tasks/tasksSlice';
 import { logOut } from './features/auth/authSlice';
 import { fetchProfile } from './features/profile/profileSlice';
 import {
@@ -16,6 +19,15 @@ import {
 import CollaborativePanel from './features/boards/CollaborativePanel';
 import BoardMembers from './features/boards/BoardMembers';
 import JoinedBoardsSelect from './features/boards/JoinedBoardsSelect';
+
+gsap.registerPlugin(ScrollTrigger);
+
+function prefersReducedMotion() {
+  return (
+    typeof window !== 'undefined' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
+}
 
 const ROLE_LABEL = { owner: 'Owner', admin: 'Admin', member: 'Member' };
 
@@ -52,30 +64,27 @@ function App() {
   // out of sync with activeBoardId.
   const boardContext = activeBoard?.type ?? 'private';
   const myRole = getMemberRole(activeBoard, user?.uid);
-  // Status changes — via the dropdown OR drag-and-drop — are restricted to
-  // Owner/Admin only on a collaborative board. Private boards (and their
-  // sole member, the owner) are always unrestricted. This is a single
-  // board-wide value, not per-task, so it's computed once here rather than
-  // per task in the render loop below.
-  const canManageStatus =
-    boardContext !== 'collaborative' || myRole === 'owner' || myRole === 'admin';
+  // Same Owner/Admin gate canManageStatus used to be, but assignment only
+  // makes sense on a collaborative board at all (a private board has one
+  // member — its owner — so there's nobody else to assign to).
+  const canAssign =
+    boardContext === 'collaborative' && (myRole === 'owner' || myRole === 'admin');
+  // Reviewing a PENDING status request (Approve/Reject) is always an
+  // Owner/Admin action, board-wide — unlike canManageStatus below, this one
+  // does NOT extend to a task's creator, since a request only exists on a
+  // task the requester couldn't directly manage in the first place.
+  const canApproveStatusRequest = myRole === 'owner' || myRole === 'admin';
 
-  // TEMPORARY DEBUG LOGGING — remove once the Approve/Reject visibility
-  // issue is diagnosed.
-  useEffect(() => {
-    console.log(
-      '[App] uid =',
-      user?.uid,
-      '| activeBoardId =',
-      activeBoardId,
-      '| boardContext =',
-      boardContext,
-      '| myRole =',
-      myRole,
-      '| canManageStatus =',
-      canManageStatus,
-    );
-  }, [user?.uid, activeBoardId, boardContext, myRole, canManageStatus]);
+  // Scope tasks to whichever board the Private/Collaborative tab currently
+  // points at. A task with no boardId is legacy/implicit-private, so it
+  // still shows up under the private board. Declared up here (rather than
+  // just before its render usage) because the stagger-reveal effect below
+  // also depends on it.
+  const visibleTasks = tasks.filter((t) =>
+    boardContext === 'private'
+      ? !t.boardId || t.boardId === activeBoardId
+      : t.boardId === activeBoardId,
+  );
 
   const [newTitle, setNewTitle] = useState('');
   const [newDescription, setNewDescription] = useState('');
@@ -102,8 +111,20 @@ function App() {
   // so a later name change shows correctly on old comments). Cached across
   // renders so each uid is only fetched once, not once per comment.
   const [commenterProfiles, setCommenterProfiles] = useState({});
+  // uid -> { email } for the active collaborative board's members, resolved
+  // live from users/{uid} — populates the assignee dropdown's options.
+  const [memberProfiles, setMemberProfiles] = useState({});
   const titleRef = useRef(null);
   const cancelConfirmRef = useRef(null);
+
+  // ── Liquid-glass animation refs (GSAP/Lenis — no Redux/data logic below) ──
+  const boardRef = useRef(null); // scoped container for the one-time stagger reveal
+  const hasRevealedRef = useRef(false);
+  const viewSwapRef = useRef(null); // cross-fade target for Board/Team + Private/Collaborative swaps
+  const firstViewRenderRef = useRef(true);
+  const detailsRefs = useRef({}); // taskId -> .card-details element, for expand/collapse tweens
+  const animatedDetailsRef = useRef(new Set()); // taskIds whose entrance tween has already played
+  const pressedBtnRef = useRef(null); // button currently mid press-scale, for pointerup-anywhere reset
 
   // Team has no purpose on a private board (single member, the owner) — a
   // stale 'users' selection just renders as Board instead, no effect needed
@@ -148,6 +169,38 @@ function App() {
     };
   }, [expandedId, tasks, commenterProfiles]);
 
+  // Batch-resolve member emails for the active collaborative board — one
+  // getDoc per unique uid not already cached, same pattern as the commenter
+  // profile resolution above. Not needed on a private board (single member,
+  // already known from `user`).
+  useEffect(() => {
+    if (boardContext !== 'collaborative' || !activeBoard) return;
+    const uniqueUids = (activeBoard.members ?? []).filter(
+      (uid) => !memberProfiles[uid],
+    );
+    if (uniqueUids.length === 0) return;
+
+    let cancelled = false;
+    Promise.all(
+      uniqueUids.map((uid) =>
+        getDoc(doc(db, 'users', uid)).then((snap) => [
+          uid,
+          { email: snap.exists() ? snap.data().email : uid },
+        ]),
+      ),
+    ).then((pairs) => {
+      if (cancelled) return;
+      setMemberProfiles((prev) => ({
+        ...prev,
+        ...Object.fromEntries(pairs),
+      }));
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [boardContext, activeBoard, memberProfiles]);
+
   // Default to the user's private board the first time nothing is selected
   // yet. Looked up live via the thunk rather than waiting on boards.list, so
   // it doesn't depend on fetchUserBoards having already resolved.
@@ -168,6 +221,144 @@ function App() {
   useEffect(() => {
     if (confirmingId !== null) cancelConfirmRef.current?.focus();
   }, [confirmingId]);
+
+  // Smooth scroll for the whole dashboard (there's no fixed/sticky toolbar
+  // here that would need to stay outside it) via Lenis, synced with GSAP's
+  // ScrollTrigger per Lenis's documented GSAP integration: feed ScrollTrigger
+  // updates off Lenis's own scroll event, drive Lenis from GSAP's ticker, and
+  // hand lag-smoothing over to Lenis so the two don't fight each other.
+  useEffect(() => {
+    if (prefersReducedMotion()) return undefined;
+    const lenis = new Lenis();
+    lenis.on('scroll', ScrollTrigger.update);
+    function raf(time) {
+      lenis.raf(time * 1000);
+    }
+    gsap.ticker.add(raf);
+    gsap.ticker.lagSmoothing(0);
+    return () => {
+      gsap.ticker.remove(raf);
+      lenis.destroy();
+    };
+  }, []);
+
+  // The one signature on-load moment: columns and their cards stagger in
+  // once. Guarded by hasRevealedRef so it never replays on later re-renders
+  // (task edits, comment drafts, board switches, ...) — only the very first
+  // time the board has content to animate.
+  useEffect(() => {
+    if (hasRevealedRef.current) return;
+    if (!boardRef.current) return;
+    const columns = boardRef.current.querySelectorAll('.column');
+    if (columns.length === 0) return;
+    hasRevealedRef.current = true;
+    if (prefersReducedMotion()) return;
+    const cards = boardRef.current.querySelectorAll('.quest-card');
+    const ctx = gsap.context(() => {
+      gsap.from(columns, {
+        y: 24,
+        opacity: 0,
+        duration: 0.5,
+        ease: 'power2.out',
+        stagger: 0.08,
+      });
+      gsap.from(cards, {
+        y: 16,
+        opacity: 0,
+        duration: 0.4,
+        ease: 'power2.out',
+        stagger: 0.04,
+        delay: 0.15,
+      });
+    }, boardRef);
+    return () => ctx.revert();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleTasks.length, effectiveView]);
+
+  // Cross-fade whenever the Board/Team or Private/Collaborative selection
+  // changes, instead of the instant swap. Skips the very first render so it
+  // doesn't fight the stagger-reveal moment above on initial mount.
+  useEffect(() => {
+    if (firstViewRenderRef.current) {
+      firstViewRenderRef.current = false;
+      return;
+    }
+    if (prefersReducedMotion() || !viewSwapRef.current) return;
+    gsap.fromTo(
+      viewSwapRef.current,
+      { opacity: 0, y: 6 },
+      { opacity: 1, y: 0, duration: 0.32, ease: 'power2.out' },
+    );
+  }, [boardContext, effectiveView]);
+
+  // Returns the SAME function instance for a given taskId across re-renders
+  // (cached in a ref, not recreated inline in JSX). A ref callback's
+  // identity matters to React: a fresh function object on every render
+  // makes React detach-then-reattach the ref every time, even when the
+  // underlying DOM node hasn't actually mounted/unmounted — which was
+  // replaying this entrance animation on every keystroke in the title/
+  // description inputs (each edit re-renders the expanded card). Caching
+  // by taskId means React only calls this on a genuine expand/collapse.
+  const detailsRefCallbacks = useRef({});
+  function attachDetailsRef(taskId) {
+    if (!detailsRefCallbacks.current[taskId]) {
+      detailsRefCallbacks.current[taskId] = (el) => {
+        detailsRefs.current[taskId] = el;
+        if (!el) {
+          animatedDetailsRef.current.delete(taskId);
+          return;
+        }
+        if (animatedDetailsRef.current.has(taskId) || prefersReducedMotion()) {
+          return;
+        }
+        animatedDetailsRef.current.add(taskId);
+        gsap.fromTo(
+          el,
+          { height: 0, opacity: 0 },
+          { height: 'auto', opacity: 1, duration: 0.3, ease: 'power2.out' },
+        );
+      };
+    }
+    return detailsRefCallbacks.current[taskId];
+  }
+
+  function handleCardHoverIn(el) {
+    if (prefersReducedMotion()) return;
+    gsap.to(el, {
+      y: -4,
+      boxShadow: '0 12px 28px rgba(45, 91, 255, 0.18)',
+      duration: 0.2,
+      ease: 'power2.out',
+    });
+  }
+
+  function handleCardHoverOut(el) {
+    if (prefersReducedMotion()) return;
+    gsap.to(el, {
+      y: 0,
+      boxShadow: '0 2px 10px rgba(28, 29, 31, 0.05)',
+      duration: 0.2,
+      ease: 'power2.out',
+    });
+  }
+
+  function handleRootPointerDown(e) {
+    if (prefersReducedMotion()) return;
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    pressedBtnRef.current = btn;
+    gsap.to(btn, { scale: 0.96, duration: 0.08, ease: 'power1.out' });
+  }
+
+  function handleRootPointerUp() {
+    if (!pressedBtnRef.current) return;
+    gsap.to(pressedBtnRef.current, {
+      scale: 1,
+      duration: 0.18,
+      ease: 'back.out(2)',
+    });
+    pressedBtnRef.current = null;
+  }
 
   function handleSelectBoardContext(context) {
     if (!user?.uid || context === boardContext) return;
@@ -272,6 +463,15 @@ function App() {
     );
   }
 
+  function handleAssignTask(taskId, assigneeUid) {
+    if (!assigneeUid) {
+      dispatch(assignTask({ taskId, assigneeUid: null, assigneeEmail: null }));
+      return;
+    }
+    const assigneeEmail = memberProfiles[assigneeUid]?.email ?? assigneeUid;
+    dispatch(assignTask({ taskId, assigneeUid, assigneeEmail }));
+  }
+
   function handleRequestStatusChange(taskId, requestedStatus) {
     if (!user?.uid) return;
     dispatch(
@@ -302,18 +502,69 @@ function App() {
     setFeedback('Status change request rejected');
   }
 
+  function handleRequestDelete(taskId) {
+    if (!user?.uid) return;
+    dispatch(requestDelete({ taskId, uid: user.uid, email: user.email }))
+      .unwrap()
+      .then(() => setFeedback('Delete requested'))
+      .catch((message) => setFeedback(message || 'Could not submit delete request.'));
+  }
+
+  function handleApproveDeleteRequest(taskId) {
+    dispatch(approveDeleteRequest({ taskId }));
+    setFeedback('Task deleted');
+  }
+
+  function handleRejectDeleteRequest(taskId) {
+    dispatch(rejectDeleteRequest({ taskId }));
+    setFeedback('Delete request rejected');
+  }
+
   function toggleExpand(id) {
-    setExpandedId(expandedId === id ? null : id);
+    if (expandedId === id) {
+      const el = detailsRefs.current[id];
+      if (el && !prefersReducedMotion()) {
+        gsap.to(el, {
+          height: 0,
+          opacity: 0,
+          duration: 0.22,
+          ease: 'power2.in',
+          onComplete: () => setExpandedId(null),
+        });
+      } else {
+        setExpandedId(null);
+      }
+      return;
+    }
+    setExpandedId(id);
+  }
+
+  // Owner/Admin: full direct status control on ANY task. A Member: direct
+  // control ONLY on a task they personally created — every other task on a
+  // collaborative board still goes through the request/approve flow. Per
+  // task rather than board-wide (unlike the old canManageStatus) since it
+  // now depends on task.userId; used both for drag-and-drop (below) and the
+  // per-task render below.
+  function canManageTaskStatus(task) {
+    return (
+      boardContext !== 'collaborative' ||
+      myRole === 'owner' ||
+      myRole === 'admin' ||
+      task?.userId === user?.uid
+    );
   }
 
   function handleDrop(e, statusName) {
     e.preventDefault();
-    // Cards are already non-draggable when !canManageStatus (see the
-    // quest-card's draggable attribute below), so this normally never
-    // fires for a restricted member — this is a defense-in-depth guard in
-    // case a drop event ever lands anyway (stale drag state, browser
-    // quirk), not the primary mechanism.
-    if (canManageStatus && draggedId !== null) {
+    // Cards are already non-draggable when the dragged task's own
+    // canManageTaskStatus is false (see the quest-card's draggable
+    // attribute below), so this normally never fires for a restricted
+    // member — this is a defense-in-depth guard in case a drop event ever
+    // lands anyway (stale drag state, browser quirk), not the primary
+    // mechanism. Looked up fresh from `tasks` (not trusted from some other
+    // per-task closure) since a drop only knows the id, not the task.
+    const draggedTask = tasks.find((t) => t.id === draggedId);
+    if (canManageTaskStatus(draggedTask) && draggedId !== null) {
       handleStatusChange(draggedId, statusName);
     }
     setDraggedId(null);
@@ -327,22 +578,18 @@ function App() {
     { name: 'Done', dot: 'var(--status-done)' },
   ];
 
-  // Scope tasks to whichever board the Private/Collaborative tab currently
-  // points at. A task with no boardId is legacy/implicit-private, so it
-  // still shows up under the private board.
-  const visibleTasks = tasks.filter((t) =>
-    boardContext === 'private'
-      ? !t.boardId || t.boardId === activeBoardId
-      : t.boardId === activeBoardId,
-  );
-
   const doneCount = visibleTasks.filter((t) => t.status === 'Done').length;
   const totalCount = visibleTasks.length;
   const progressPercent =
     totalCount === 0 ? 0 : Math.round((doneCount / totalCount) * 100);
 
   return (
-    <div className="page">
+    <div
+      className="page"
+      onPointerDown={handleRootPointerDown}
+      onPointerUp={handleRootPointerUp}
+      onPointerCancel={handleRootPointerUp}
+    >
       <header className="topbar">
         <div className="brand">
           <div className="logo">
@@ -407,6 +654,7 @@ function App() {
 
       {boardContext === 'collaborative' && <CollaborativePanel />}
 
+      <div className="view-transition-target" ref={viewSwapRef}>
       {effectiveView === 'users' ? (
         <BoardMembers />
       ) : (
@@ -496,7 +744,7 @@ function App() {
         {feedback}
       </div>
 
-      <div className="board">
+      <div className="board" ref={boardRef}>
         {statuses.map((status) => (
           <div
             className={`column${
@@ -534,19 +782,18 @@ function App() {
               .map((task) => {
                 const isPrivateTask =
                   !task.boardId || task.boardId === profileData?.defaultBoardId;
+                // Moving a task between private/collaborative changes its
+                // boardId — which, for a collaborative board, controls who
+                // can even see the task at all. Restricted to whoever
+                // created it (task.userId, set at creation time in
+                // addTask), regardless of role — an Owner/Admin managing a
+                // board doesn't get to relocate a task someone else made.
+                // Enforced server-side too, see firestore.rules.
+                const isTaskCreator = task.userId === user?.uid;
                 const comments = task.comments ?? [];
                 const statusRequest = task.statusRequest ?? null;
-
-                // TEMPORARY DEBUG LOGGING — remove once the Approve/Reject
-                // visibility issue is diagnosed.
-                console.log(
-                  '[App] task',
-                  task.id,
-                  '| boardId =',
-                  task.boardId,
-                  '| statusRequest =',
-                  statusRequest,
-                );
+                const deleteRequest = task.deleteRequest ?? null;
+                const canManageStatus = canManageTaskStatus(task);
 
                 return (
                 <div
@@ -560,6 +807,8 @@ function App() {
                     setDraggedId(null);
                     setDragOverColumn(null);
                   }}
+                  onMouseEnter={(e) => handleCardHoverIn(e.currentTarget)}
+                  onMouseLeave={(e) => handleCardHoverOut(e.currentTarget)}
                 >
                   <button
                     type="button"
@@ -589,7 +838,7 @@ function App() {
                         </option>
                       ))}
                     </select>
-                    {canManageStatus && statusRequest && (
+                    {canApproveStatusRequest && statusRequest && (
                       <span className="status-request-actions">
                         <span className="status-pending">
                           Requested: &rarr; {statusRequest.requestedStatus}
@@ -655,59 +904,120 @@ function App() {
                     <span className="priority-badge">
                       {task.priority || 'Medium'}
                     </span>
-                    <button
-                      type="button"
-                      className="make-collaborative"
-                      onClick={() =>
-                        isPrivateTask
-                          ? handleMakeCollaborative(task.id)
-                          : handleMakePrivate(task.id)
-                      }
-                    >
-                      {isPrivateTask ? 'Make Collaborative' : 'Make Private'}
-                    </button>
-                    {confirmingId === task.id ? (
-                      <div
-                        className="card-confirm"
-                        role="group"
-                        aria-label="Confirm deletion"
-                        onKeyDown={(e) => {
-                          if (e.key === 'Escape') setConfirmingId(null);
-                        }}
+                    {boardContext === 'collaborative' && task.assignee && (
+                      <span
+                        className="assignee-badge"
+                        title={`Assigned to ${task.assignee.email}`}
                       >
-                        <span>Delete?</span>
-                        <button
-                          type="button"
-                          ref={cancelConfirmRef}
-                          onClick={() => setConfirmingId(null)}
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          type="button"
-                          className="danger"
-                          onClick={() => {
-                            handleDeleteTask(task.id);
-                            setConfirmingId(null);
-                          }}
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    ) : (
+                        {task.assignee.email}
+                      </span>
+                    )}
+                    {isTaskCreator && (
                       <button
                         type="button"
-                        className="delete-x"
-                        aria-label={`Delete task: ${task.title}`}
-                        onClick={() => setConfirmingId(task.id)}
+                        className="make-collaborative"
+                        onClick={() =>
+                          isPrivateTask
+                            ? handleMakeCollaborative(task.id)
+                            : handleMakePrivate(task.id)
+                        }
                       >
-                        ×
+                        {isPrivateTask ? 'Make Collaborative' : 'Make Private'}
                       </button>
+                    )}
+                    {/* Delete is Owner-only-direct on a collaborative board — Admin
+                        and Member (even the task's own creator) submit a delete
+                        request instead, reviewed by the Owner. Private boards are
+                        untouched: boardContext !== 'collaborative' always takes
+                        the normal confirm/delete-x branch below, same as before
+                        this feature. */}
+                    {boardContext === 'collaborative' && myRole !== 'owner' ? (
+                      deleteRequest ? (
+                        <span className="status-pending" aria-disabled="true">
+                          Pending deletion approval
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          className="delete-x"
+                          aria-label={`Request delete for task: ${task.title}`}
+                          onClick={() => handleRequestDelete(task.id)}
+                        >
+                          Request Delete
+                        </button>
+                      )
+                    ) : (
+                      <>
+                        {confirmingId === task.id ? (
+                          <div
+                            className="card-confirm"
+                            role="group"
+                            aria-label="Confirm deletion"
+                            onKeyDown={(e) => {
+                              if (e.key === 'Escape') setConfirmingId(null);
+                            }}
+                          >
+                            <span>Delete?</span>
+                            <button
+                              type="button"
+                              ref={cancelConfirmRef}
+                              onClick={() => setConfirmingId(null)}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              className="danger"
+                              onClick={() => {
+                                handleDeleteTask(task.id);
+                                setConfirmingId(null);
+                              }}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            className="delete-x"
+                            aria-label={`Delete task: ${task.title}`}
+                            onClick={() => setConfirmingId(task.id)}
+                          >
+                            ×
+                          </button>
+                        )}
+                        {boardContext === 'collaborative' &&
+                          myRole === 'owner' &&
+                          deleteRequest && (
+                            <span className="status-request-actions">
+                              <span className="status-pending">
+                                Delete requested
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleApproveDeleteRequest(task.id)
+                                }
+                              >
+                                Approve Delete
+                              </button>
+                              <button
+                                type="button"
+                                className="danger"
+                                onClick={() =>
+                                  handleRejectDeleteRequest(task.id)
+                                }
+                              >
+                                Reject Delete
+                              </button>
+                            </span>
+                          )}
+                      </>
                     )}
                   </div>
 
                   {expandedId === task.id && (
-                    <div className="card-details">
+                    <div className="card-details" ref={attachDetailsRef(task.id)}>
                       <input
                         aria-label="Edit task title"
                         value={task.title}
@@ -738,6 +1048,24 @@ function App() {
                           </option>
                         ))}
                       </select>
+
+                      {boardContext === 'collaborative' && (
+                        <select
+                          aria-label={`Assignee for ${task.title}`}
+                          value={task.assignee?.uid ?? ''}
+                          disabled={!canAssign}
+                          onChange={(e) =>
+                            handleAssignTask(task.id, e.target.value || null)
+                          }
+                        >
+                          <option value="">Unassigned</option>
+                          {(activeBoard?.members ?? []).map((uid) => (
+                            <option key={uid} value={uid}>
+                              {memberProfiles[uid]?.email ?? uid}
+                            </option>
+                          ))}
+                        </select>
+                      )}
 
                       <div className="task-comments">
                         <h4>Comments</h4>
@@ -890,6 +1218,7 @@ function App() {
       </div>
         </>
       )}
+      </div>
     </div>
   );
 }

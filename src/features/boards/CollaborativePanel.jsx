@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { getMemberRole } from './boardsSlice';
+import { getMemberRole, renameBoard } from './boardsSlice';
 import {
   approveJoinRequest,
   rejectJoinRequest,
@@ -19,15 +19,40 @@ function CollaborativePanel() {
   const activeBoard = boards.find((b) => b.id === activeBoardId) ?? null;
   const myRole = getMemberRole(activeBoard, user?.uid);
   const canApprove = myRole === 'owner' || myRole === 'admin';
+  const isOwner = myRole === 'owner';
 
   const [inviteCodeInput, setInviteCodeInput] = useState('');
   const [feedback, setFeedback] = useState('');
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [nameDraft, setNameDraft] = useState('');
 
   useEffect(() => {
     if (!feedback) return;
     const timer = setTimeout(() => setFeedback(''), 2500);
     return () => clearTimeout(timer);
   }, [feedback]);
+
+  function handleStartRename() {
+    setNameDraft(activeBoard?.name ?? '');
+    setIsRenaming(true);
+  }
+
+  function handleCancelRename() {
+    setIsRenaming(false);
+    setNameDraft('');
+  }
+
+  function handleSaveRename() {
+    const trimmed = nameDraft.trim();
+    if (!trimmed || !activeBoard) return;
+    dispatch(renameBoard({ boardId: activeBoard.id, newName: trimmed }))
+      .unwrap()
+      .then(() => {
+        setIsRenaming(false);
+        setFeedback('Board renamed');
+      })
+      .catch((message) => setFeedback(message || 'Could not rename board.'));
+  }
 
   function handleJoinBoard() {
     if (!user?.uid || inviteCodeInput.trim() === '') return;
@@ -64,6 +89,41 @@ function CollaborativePanel() {
 
   return (
     <div className="collaborative-panel">
+      <div className="board-name-row">
+        {isRenaming ? (
+          <span className="board-rename-form">
+            <input
+              aria-label="Board name"
+              value={nameDraft}
+              onChange={(e) => setNameDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleSaveRename();
+                if (e.key === 'Escape') handleCancelRename();
+              }}
+            />
+            <button type="button" onClick={handleSaveRename}>
+              Save
+            </button>
+            <button type="button" onClick={handleCancelRename}>
+              Cancel
+            </button>
+          </span>
+        ) : (
+          <>
+            <h3 className="board-name">{activeBoard?.name ?? 'Board'}</h3>
+            {isOwner && (
+              <button
+                type="button"
+                className="rename-board-btn"
+                onClick={handleStartRename}
+              >
+                Rename
+              </button>
+            )}
+          </>
+        )}
+      </div>
+
       {activeBoard?.inviteCode && (
         <p className="invite-code">
           Invite code: <strong>{activeBoard.inviteCode}</strong>

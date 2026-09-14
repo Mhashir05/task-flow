@@ -160,6 +160,25 @@ export const removeMember = createAsyncThunk(
   },
 );
 
+// Owner-only (not Admin). Same client-stopgap convention as
+// updateMemberRole/removeMember above — the real boundary is
+// firestore.rules, which only permits a `name` change from the board's
+// current owner.
+export const renameBoard = createAsyncThunk(
+  'boards/renameBoard',
+  async ({ boardId, newName }, { getState, dispatch, rejectWithValue }) => {
+    const currentUid = getState().auth.user?.uid;
+    const board = getState().boards.list.find((b) => b.id === boardId);
+    if (!board) return rejectWithValue('Board not found.');
+    if (getMemberRole(board, currentUid) !== 'owner') {
+      return rejectWithValue('Only the board owner can rename this board.');
+    }
+
+    await updateDoc(doc(db, 'boards', boardId), { name: newName });
+    await dispatch(fetchUserBoards(currentUid));
+  },
+);
+
 // Every user has exactly one private board (created at signup/login by
 // ensureDefaultBoard in authSlice.js) — look it up fresh from Firestore
 // rather than trusting cached Redux state, same as the collaborative thunk.
@@ -191,6 +210,13 @@ const boardsSlice = createSlice({
     activeBoardSet: (state, action) => {
       state.activeBoardId = action.payload;
     },
+    // Dispatched by boardsListenerMiddleware.js's onSnapshot, not by any
+    // thunk here — `list` and `joined` are pre-split by the listener
+    // (which already knows the current uid) rather than in this reducer.
+    boardsReceived: (state, action) => {
+      state.list = action.payload.list;
+      state.joined = action.payload.joined;
+    },
     boardsCleared: (state) => {
       state.list = [];
       state.joined = [];
@@ -215,5 +241,5 @@ const boardsSlice = createSlice({
   },
 });
 
-export const { activeBoardSet, boardsCleared } = boardsSlice.actions;
+export const { activeBoardSet, boardsReceived, boardsCleared } = boardsSlice.actions;
 export default boardsSlice.reducer;

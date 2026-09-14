@@ -23,6 +23,7 @@ function BoardMembers() {
     error: null,
   });
   const [feedback, setFeedback] = useState('');
+  const [searchText, setSearchText] = useState('');
 
   useEffect(() => {
     if (!activeBoard) return;
@@ -33,6 +34,7 @@ function BoardMembers() {
         getDoc(doc(db, 'users', uid)).then((snap) => ({
           uid,
           email: snap.exists() ? snap.data().email : uid,
+          displayName: snap.exists() ? snap.data().displayName : '',
         })),
       ),
     )
@@ -65,6 +67,16 @@ function BoardMembers() {
   const error = loading ? null : result.error;
   const isCollaborative = activeBoard?.type === 'collaborative';
 
+  // Pure client-side filter over the already-fetched member list — no
+  // Firestore query involved, matches on email OR resolved displayName.
+  const filteredMembers = members.filter((member) => {
+    const query = searchText.trim().toLowerCase();
+    if (!query) return true;
+    const email = (member.email ?? '').toLowerCase();
+    const name = (member.displayName ?? '').toLowerCase();
+    return email.includes(query) || name.includes(query);
+  });
+
   function handleRoleChange(targetUid, newRole) {
     if (!activeBoard) return;
     dispatch(updateMemberRole({ boardId: activeBoard.id, targetUid, newRole }))
@@ -89,9 +101,24 @@ function BoardMembers() {
       {activeBoard && loading && <p>Loading&hellip;</p>}
       {activeBoard && error && <p role="alert">{error}</p>}
 
-      {activeBoard && !loading && !error && (
+      {activeBoard && !loading && !error && members.length > 0 && (
+        <input
+          type="text"
+          className="member-search"
+          value={searchText}
+          onChange={(e) => setSearchText(e.target.value)}
+          placeholder="Search members…"
+          aria-label="Search team members"
+        />
+      )}
+
+      {activeBoard && !loading && !error && members.length > 0 && filteredMembers.length === 0 && (
+        <p className="member-search-empty">No members match.</p>
+      )}
+
+      {activeBoard && !loading && !error && filteredMembers.length > 0 && (
         <ul>
-          {members.map((member) => {
+          {filteredMembers.map((member) => {
             const role = getMemberRole(activeBoard, member.uid) ?? 'member';
             const isSelf = member.uid === user?.uid;
             const canManageRoles =
@@ -102,17 +129,35 @@ function BoardMembers() {
               !isSelf &&
               (myRole === 'owner' || (myRole === 'admin' && role === 'member'));
 
+            // Same resolved-name pattern as the header's own
+            // displayName/emailFallback and the comments section's
+            // commenterDisplayName: fall back to the email's local-part
+            // when no displayName has been set.
+            const emailFallback = member.email
+              ? member.email.split('@')[0]
+              : member.uid;
+            const memberDisplayName =
+              member.displayName && member.displayName.trim() !== ''
+                ? member.displayName
+                : emailFallback;
+
             return (
               <li key={member.uid} className="board-member-row">
-                <span>
-                  {member.email} &mdash; {ROLE_LABEL[role] ?? role}
+                <span className="board-member-identity">
+                  <span className="board-member-name">
+                    {memberDisplayName}
+                    <span className="role-badge">
+                      {ROLE_LABEL[role] ?? role}
+                    </span>
+                  </span>
+                  <span className="board-member-email">{member.email}</span>
                 </span>
                 {(canManageRoles || canRemove) && (
                   <span className="board-member-actions">
                     {canManageRoles && (
                       <select
                         value={role}
-                        aria-label={`Change role for ${member.email}`}
+                        aria-label={`Change role for ${memberDisplayName}`}
                         onChange={(e) =>
                           handleRoleChange(member.uid, e.target.value)
                         }

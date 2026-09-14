@@ -69,6 +69,21 @@ export const moveTaskToPrivate = createAsyncThunk(
   },
 );
 
+// Owner/Admin only, enforced by the caller hiding/disabling the UI for a
+// plain Member (same "client stopgap, real boundary is firestore.rules"
+// convention as updateMemberRole/removeMember in boardsSlice.js) — the
+// rules layer already excludes `assignee` from every Member write shape,
+// so a Member calling this directly would be rejected regardless of the UI.
+// assigneeUid/assigneeEmail null clears the assignment back to Unassigned.
+export const assignTask = createAsyncThunk(
+  'tasks/assignTask',
+  async ({ taskId, assigneeUid, assigneeEmail }) => {
+    await updateDoc(doc(db, 'tasks', taskId), {
+      assignee: assigneeUid ? { uid: assigneeUid, email: assigneeEmail } : null,
+    });
+  },
+);
+
 // createdAt here is a plain client timestamp (ms epoch), not
 // serverTimestamp() — Firestore rejects a serverTimestamp() sentinel used
 // as a value inside an arrayUnion() element.
@@ -123,6 +138,47 @@ export const rejectStatusRequest = createAsyncThunk(
   'tasks/rejectStatusRequest',
   async ({ taskId }) => {
     await updateDoc(doc(db, 'tasks', taskId), { statusRequest: null });
+  },
+);
+
+// Delete is Owner-only-direct on a collaborative board — Admin and Member
+// (regardless of whether they created the task) submit this request instead,
+// same shape/pattern as requestStatusChange above (client-side "already
+// pending" guard is a UX nicety; the real null->value-only boundary lives in
+// firestore.rules).
+export const requestDelete = createAsyncThunk(
+  'tasks/requestDelete',
+  async ({ taskId, uid, email }, { getState, rejectWithValue }) => {
+    const task = getState().tasks.find((t) => t.id === taskId);
+    if (task?.deleteRequest) {
+      return rejectWithValue(
+        'A delete request is already pending for this task.',
+      );
+    }
+    await updateDoc(doc(db, 'tasks', taskId), {
+      deleteRequest: {
+        requestedBy: uid,
+        requestedByEmail: email,
+        createdAt: serverTimestamp(),
+      },
+    });
+  },
+);
+
+// Owner-only. Unlike approveStatusRequest (which clears the request AND
+// writes a new value), this actually deletes the document — the request is
+// a gate in front of the real deleteTask operation, not a field to resolve.
+export const approveDeleteRequest = createAsyncThunk(
+  'tasks/approveDeleteRequest',
+  async ({ taskId }) => {
+    await deleteDoc(doc(db, 'tasks', taskId));
+  },
+);
+
+export const rejectDeleteRequest = createAsyncThunk(
+  'tasks/rejectDeleteRequest',
+  async ({ taskId }) => {
+    await updateDoc(doc(db, 'tasks', taskId), { deleteRequest: null });
   },
 );
 

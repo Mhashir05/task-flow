@@ -33,6 +33,15 @@ service cloud.firestore {
         && (d.addedKeys().size() + d.removedKeys().size()) <= 1;
     }
 
+    // A write that doesn't touch `field` at all is unaffected by this check;
+    // a write that DOES touch it requires the actor's CURRENT role (from the
+    // existing document) to be 'owner'. Used to make board rename Owner-only
+    // (not Admin), independent of the roles-map gate above.
+    function isOwnerOnlyFieldChange(before, after, uid, field) {
+      return !after.diff(before).affectedKeys().hasAny([field])
+        || roleOf(before, uid) == 'owner';
+    }
+
     match /boards/{boardId} {
       // The isMember branch covers queries filtered by
       // where('members', 'array-contains', uid) — Firestore can prove that
@@ -86,7 +95,17 @@ service cloud.firestore {
             roleOf(resource.data, request.auth.uid) == 'admin'
             && isSafeAdminRolesChange(resource.data, request.resource.data)
           )
-        );
+        )
+        // Renaming (`name`) is Owner-only, independent of the roles gate
+        // above — an Admin can still pass the roles branch (e.g. by not
+        // touching `roles` at all) but is stopped here specifically for a
+        // `name` change, since only that field is restricted by this clause.
+        && isOwnerOnlyFieldChange(
+             resource.data,
+             request.resource.data,
+             request.auth.uid,
+             'name',
+           );
 
       allow delete: if isSignedIn() && isMember(resource.data, request.auth.uid);
     }
@@ -176,25 +195,93 @@ service cloud.firestore {
           && (removed[0].uid == uid || roleOf(board, uid) in ['owner', 'admin']);
       }
 
-      allow read, delete: if isSignedIn()
+      // A private/collaborative move changes ONLY boardId — nothing else.
+      // That specific shape is creator-only, regardless of role: it decides
+      // which board (and therefore which members) can access the task
+      // afterward, so even an Owner/Admin must not be able to relocate a
+      // task someone else created. A write touching boardId ALONGSIDE any
+      // other field, or not touching boardId at all, is unaffected by this
+      // function (returns true) and falls through to the normal
+      // owner/admin / member-carve-out branches below as usual. This is an
+      // AND-ed restriction, not a grant — see isCreatorBoardMove below for
+      // the corresponding grant a plain Member needs for their OWN task.
+      function isSafeBoardMove(before, after, uid) {
+        return !after.diff(before).affectedKeys().hasOnly(['boardId'])
+          || before.userId == uid;
+      }
+
+      // The corresponding OR-branch grant: a plain Member (not owner/admin)
+      // moving a task THEY created between private/collaborative. Without
+      // this, a Member's boardId-only write matches no branch above (none
+      // of the other member carve-outs mention boardId) and would be
+      // rejected outright — including for their own task. Combined with
+      // isSafeBoardMove's restriction below, the net effect is: creator-only,
+      // for every role, exactly as intended.
+      function isCreatorBoardMove(before, after, uid) {
+        return after.diff(before).affectedKeys().hasOnly(['boardId'])
+          && before.userId == uid;
+      }
+
+      // A Member's direct status change on a task THEY created — exactly
+      // one field (status) touched, no approval detour needed. Owner/Admin
+      // already have unrestricted status control on any task via the role
+      // branch below regardless of creator, so this exists purely to grant
+      // the creator-Member case the role branch doesn't cover.
+      function isCreatorStatusChange(before, after, uid) {
+        return after.diff(before).affectedKeys().hasOnly(['status'])
+          && before.userId == uid;
+      }
+
+      // A Member/Admin's delete request — same null-to-value, self-only
+      // shape as isMemberStatusRequest above, just for a different field.
+      // Clearing it back to null (reject) or performing the real delete
+      // (approve) are both Owner-only, enforced by the role branch below
+      // (reject, a plain field write) and the dedicated `allow delete` rule
+      // (approve, an actual document delete) respectively — neither goes
+      // through this function.
+      function isRequestDeleteChange(before, after, uid) {
+        return after.diff(before).affectedKeys().hasOnly(['deleteRequest'])
+          && before.get('deleteRequest', null) == null
+          && after.deleteRequest != null
+          && after.deleteRequest.requestedBy == uid;
+      }
+
+      allow read: if isSignedIn()
         && isTaskBoardMember(resource.data.boardId, request.auth.uid);
+
+      // Owner-only-direct, on ANY task regardless of who created it —
+      // Admin and Member (even the task's own creator) must go through
+      // requestDelete/approveDeleteRequest instead. roleOf()'s fallback
+      // (ownerId == uid -> 'owner') already makes this work correctly for a
+      // private board's sole member with no extra code: they're always
+      // 'owner' there, so their own direct deletes are unaffected.
+      allow delete: if isSignedIn()
+        && isTaskBoardMember(resource.data.boardId, request.auth.uid)
+        && roleOf(boardOfTask(resource.data.boardId), request.auth.uid) == 'owner';
 
       allow create: if isSignedIn()
         && isTaskBoardMember(request.resource.data.boardId, request.auth.uid);
 
       // Owner/admin: full access to any field (status changes, editing,
-      // approving/rejecting a request, etc.) — same as before this feature.
-      // Plain member: restricted to EXACTLY one of the two safe shapes
-      // above; every other field (status, title, description, boardId, ...)
-      // is off-limits to them entirely. Because affectedKeys() only
-      // contains fields whose VALUE actually changed, a member cannot
-      // bundle a real status change into an otherwise-allowed write: doing
-      // so adds 'status' to affectedKeys(), which fails hasOnly(['comments'])
-      // / hasOnly(['statusRequest']) immediately — there is no shape of
-      // request that both changes status and satisfies either branch.
-      // Private boards are unaffected: a private board's sole member has no
-      // roles map, and roleOf()'s fallback resolves ownerId == uid to
-      // 'owner', so they always take the unrestricted branch.
+      // approving/rejecting a status or delete request, task assignment,
+      // etc.) on ANY task — same as before this feature. Plain member:
+      // restricted to EXACTLY one of the safe shapes above (comment append/
+      // edit/delete, a status-request, a creator-only boardId move, a
+      // creator-only direct status change, or a delete request); every
+      // other field (title, description, assignee, ...) — and status/
+      // boardId/deleteRequest changes OUTSIDE those specific shapes — is
+      // off-limits to them entirely. Because affectedKeys() only contains
+      // fields whose VALUE actually changed, a member cannot bundle a real
+      // change into an otherwise-allowed write: doing so adds an extra key
+      // to affectedKeys(), which fails every hasOnly([...]) check
+      // immediately — there is no shape of request that changes an
+      // off-limits field and still satisfies a member branch. This is why
+      // `assignee` needed no rule of its own: it's Owner/Admin-only
+      // automatically, simply by never being named in any member carve-
+      // out's hasOnly() list. Private boards are unaffected: a private
+      // board's sole member has no roles map, and roleOf()'s fallback
+      // resolves ownerId == uid to 'owner', so they always take the
+      // unrestricted branch.
       allow update: if isSignedIn()
         && isTaskBoardMember(resource.data.boardId, request.auth.uid)
         && (
@@ -208,7 +295,15 @@ service cloud.firestore {
                boardOfTask(resource.data.boardId),
                request.auth.uid
              )
-        );
+          || isCreatorBoardMove(resource.data, request.resource.data, request.auth.uid)
+          || isCreatorStatusChange(resource.data, request.resource.data, request.auth.uid)
+          || isRequestDeleteChange(resource.data, request.resource.data, request.auth.uid)
+        )
+        // Independent of every branch above — including the unconditional
+        // owner/admin one — so a private/collaborative move specifically
+        // still requires being the task's creator no matter what role
+        // otherwise would have allowed this write.
+        && isSafeBoardMove(resource.data, request.resource.data, request.auth.uid);
     }
 
     match /users/{uid} {
