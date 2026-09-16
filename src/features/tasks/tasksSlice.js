@@ -75,18 +75,30 @@ export const moveTaskToPrivate = createAsyncThunk(
 // Owner/Admin only, enforced by the caller hiding/disabling the UI for a
 // plain Member (same "client stopgap, real boundary is firestore.rules"
 // convention as updateMemberRole/removeMember in boardsSlice.js) — the
-// rules layer already excludes `assignees` from every Member write shape,
-// so a Member calling this directly would be rejected regardless of the UI.
+// rules layer already excludes `assignees`/`assigneeUids` from every
+// Member write shape, so a Member calling this directly would be rejected
+// regardless of the UI.
 // `assignees` is the FULL desired array of {uid, email}, not a delta —
 // the caller (BoardWorkspace.jsx) computes the new array by toggling one
 // member in/out of the current selection and sends the whole thing in one
 // write, rather than an arrayUnion/arrayRemove pair, which gets awkward
 // once the elements are objects rather than primitives (arrayRemove needs
 // an exact object match, easy to get subtly wrong across re-renders).
+// `assigneeUids` is derived from that same array in the SAME write, so
+// the two can never drift apart — it exists purely so firestore.rules can
+// content-check who's being assigned (a plain string array supports
+// hasAny(), unlike an array of {uid, email} maps), specifically to
+// enforce that the board's Owner can never be assigned a task. `assignees`
+// itself carries no such guarantee at the rules layer; this thunk is the
+// trust boundary that keeps it in lockstep, the same way boardId/type
+// consistency is a client-trusted invariant elsewhere in this schema.
 export const setTaskAssignees = createAsyncThunk(
   'tasks/setTaskAssignees',
   async ({ taskId, assignees }) => {
-    await updateDoc(doc(db, 'tasks', taskId), { assignees });
+    await updateDoc(doc(db, 'tasks', taskId), {
+      assignees,
+      assigneeUids: assignees.map((a) => a.uid),
+    });
   },
 );
 

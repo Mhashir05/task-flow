@@ -316,6 +316,34 @@ service cloud.firestore {
           && roleOf(board, removed[0].uid) == 'owner';
       }
 
+      // The board's Owner must never appear as a task assignee — not
+      // enforceable by content-checking `assignees` directly, since it's a
+      // List<Map> and this language's List operations (hasAny/hasAll/
+      // hasOnly) only do whole-element equality; there's no per-field
+      // predicate (no .exists()/.filter() comprehension here) to ask "does
+      // any element have uid == X" against a list of {uid, email} maps.
+      // `assigneeUids` (a plain string array, derived from `assignees` in
+      // the SAME write by setTaskAssignees in tasksSlice.js) exists
+      // specifically to make this checkable — hasAny() works directly on
+      // scalars. `assigneeUids` is therefore the SOLE rules-enforced
+      // source of truth for this restriction; `assignees` itself carries
+      // no independent guarantee here. Keeping the two in lockstep is a
+      // client-trusted invariant, the same trust boundary as boardId/type
+      // consistency elsewhere in this schema — nothing in this file
+      // verifies `assignees` and `assigneeUids` actually describe the same
+      // set of people, only that neither the Owner's uid specifically ends
+      // up in `assigneeUids`.
+      //
+      // `after.get('assigneeUids', [])` defaults a legacy task that has
+      // never had this field written to an empty list, so this returns
+      // true (not applicable) — never blocking an unrelated update to an
+      // old task — both when `assigneeUids` isn't touched at all AND, via
+      // the default, if it somehow were read without ever being written.
+      function isSafeAssigneeUids(before, after, board) {
+        return !after.diff(before).affectedKeys().hasAny(['assigneeUids'])
+          || !after.get('assigneeUids', []).hasAny([board.ownerId]);
+      }
+
       // A private/collaborative move requires BOTH: (a) creator-only,
       // regardless of role — even an Owner/Admin must not be able to
       // relocate a task someone else created — AND (b) the actor must hold
@@ -543,6 +571,20 @@ service cloud.firestore {
             // task's creator AND holding owner/admin on the target board,
             // no matter what role otherwise would have allowed this write.
             && isSafeBoardMove(resource.data, request.resource.data, request.auth.uid)
+            // Same independence as isSafeBoardMove above, for a different
+            // field: no branch in the group — including the unconditional
+            // owner/admin one — may write the board's Owner into
+            // assigneeUids, regardless of what role or shape otherwise
+            // permitted this write. In practice only the unconditional
+            // owner/admin branch can touch assigneeUids at all today (no
+            // member carve-out's hasOnly() names it), but this is applied
+            // at the group level rather than folded into that one branch
+            // so it stays correct even if a future carve-out ever did.
+            && isSafeAssigneeUids(
+                 resource.data,
+                 request.resource.data,
+                 boardOfTask(resource.data.boardId),
+               )
           )
           || isPublishApprove(resource.data, request.resource.data, request.auth.uid)
           || isPublishReject(resource.data, request.resource.data, request.auth.uid)
