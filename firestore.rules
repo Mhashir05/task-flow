@@ -42,13 +42,59 @@ service cloud.firestore {
         || roleOf(before, uid) == 'owner';
     }
 
+    // Precise carve-out for ownership transfer: ownerId becomes some
+    // existing member X, roles[X] becomes 'owner', roles[the OLD ownerId]
+    // becomes 'admin', and NOTHING else in the document changes (not even
+    // some OTHER member's role in the same write). Deliberately its own
+    // function rather than folded into isSafeAdminRolesChange or
+    // isOwnerOnlyFieldChange — this is a two-key roles change PLUS an
+    // ownerId change, together, which neither of those shapes describes.
+    // Gated on uid == before.ownerId (the CURRENT owner, pre-change) —
+    // nobody else, including the incoming new owner, can initiate this.
+    function isOwnershipTransfer(before, after, uid) {
+      let newOwner = after.ownerId;
+      let rolesDiff = after.get('roles', {}).diff(before.get('roles', {}));
+      return uid == before.ownerId
+        && newOwner != before.ownerId
+        && newOwner in before.members
+        && after.diff(before).affectedKeys().hasOnly(['ownerId', 'roles'])
+        && rolesDiff.addedKeys().size() == 0
+        && rolesDiff.removedKeys().size() == 0
+        && rolesDiff.changedKeys().hasOnly([before.ownerId, newOwner])
+        && after.roles[newOwner] == 'owner'
+        && after.roles[before.ownerId] == 'admin';
+    }
+
+    // A member voluntarily leaving: members shrinks by EXACTLY the acting
+    // user's own uid (list.removeAll() proves this the same value-based way
+    // isOwnCommentEdit/isCommentDelete already do on tasks — see there for
+    // why that's the right tool), and roles loses exactly that uid's own
+    // key — nothing else in the document changes. Blocked for the board's
+    // ownerId specifically: the Owner must transferOwnership or
+    // deleteCollaborativeBoard instead, never just disappear from `members`
+    // while still being named as owner elsewhere in the document.
+    function isSelfLeave(before, after, uid) {
+      let beforeMembers = before.members;
+      let afterMembers = after.get('members', []);
+      let removedMembers = beforeMembers.removeAll(afterMembers);
+      let addedMembers = afterMembers.removeAll(beforeMembers);
+      let rolesDiff = after.get('roles', {}).diff(before.get('roles', {}));
+      return uid != before.ownerId
+        && after.diff(before).affectedKeys().hasOnly(['members', 'roles'])
+        && removedMembers.size() == 1
+        && removedMembers[0] == uid
+        && addedMembers.size() == 0
+        && rolesDiff.addedKeys().size() == 0
+        && rolesDiff.changedKeys().size() == 0
+        && rolesDiff.removedKeys().hasOnly([uid]);
+    }
+
     match /boards/{boardId} {
       // The isMember branch covers queries filtered by
       // where('members', 'array-contains', uid) — Firestore can prove that
       // holds for every possible result directly from the query's own
-      // filter. The ownerId branch exists because two client queries
-      // (getOrCreateCollaborativeBoard's and getUserPrivateBoard's
-      // existing-board lookups) filter by where('ownerId', '==', uid)
+      // filter. The ownerId branch exists because getUserPrivateBoard's
+      // existing-board lookup filters by where('ownerId', '==', uid)
       // instead — a field the isMember check never references, so
       // Firestore can't verify isMember would hold for every possible
       // match and rejects the whole query, even though ownerId always
@@ -95,6 +141,7 @@ service cloud.firestore {
             roleOf(resource.data, request.auth.uid) == 'admin'
             && isSafeAdminRolesChange(resource.data, request.resource.data)
           )
+          || isSelfLeave(resource.data, request.resource.data, request.auth.uid)
         )
         // Renaming (`name`) is Owner-only, independent of the roles gate
         // above — an Admin can still pass the roles branch (e.g. by not
@@ -105,9 +152,23 @@ service cloud.firestore {
              request.resource.data,
              request.auth.uid,
              'name',
-           );
+           )
+        // ownerId may ONLY change via the precise isOwnershipTransfer shape
+        // — deliberately NOT folded into the roles gate above. That gate's
+        // unconditional "current owner can touch roles freely" branch would
+        // otherwise let ownerId ride along with any roles write with zero
+        // validation that the new owner is an actual member, that the old
+        // owner is correctly demoted rather than orphaned, or that nothing
+        // else in the document was tampered with in the same write.
+        && (
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny(['ownerId'])
+          || isOwnershipTransfer(resource.data, request.resource.data, request.auth.uid)
+        );
 
-      allow delete: if isSignedIn() && isMember(resource.data, request.auth.uid);
+      // Owner-only — tightened from "any member" (isMember alone), which
+      // let an Admin or Member delete a board out from under its owner.
+      allow delete: if isSignedIn()
+        && roleOf(resource.data, request.auth.uid) == 'owner';
     }
 
     match /tasks/{taskId} {
@@ -196,18 +257,40 @@ service cloud.firestore {
       }
 
       // A private/collaborative move changes ONLY boardId — nothing else.
-      // That specific shape is creator-only, regardless of role: it decides
-      // which board (and therefore which members) can access the task
-      // afterward, so even an Owner/Admin must not be able to relocate a
-      // task someone else created. A write touching boardId ALONGSIDE any
-      // other field, or not touching boardId at all, is unaffected by this
-      // function (returns true) and falls through to the normal
-      // owner/admin / member-carve-out branches below as usual. This is an
-      // AND-ed restriction, not a grant — see isCreatorBoardMove below for
-      // the corresponding grant a plain Member needs for their OWN task.
+      // That specific shape requires BOTH: (a) creator-only, regardless of
+      // role — even an Owner/Admin must not be able to relocate a task
+      // someone else created — AND (b) the actor must hold owner/admin role
+      // on the TARGET board (after.boardId), not just the current one.
+      //
+      // (b) closes a gap found while adding the publish-request workflow:
+      // without it, a private board's owner (always also its own tasks'
+      // creator, satisfying (a) trivially) could set boardId directly to
+      // ANY board — including one where their own role is only 'member' —
+      // completely bypassing the requestPublish/approve flow that's
+      // supposed to gate exactly that case. Requiring owner/admin on the
+      // target closes this for every path that could produce a boardId-only
+      // write (the current-board owner/admin branch below, AND
+      // isCreatorBoardMove), without needing to duplicate the check into
+      // each one individually. Costs one extra get() on the target board,
+      // evaluated only for a boardId-only write.
+      //
+      // A write touching boardId ALONGSIDE any other field, or not touching
+      // boardId at all, is unaffected by this function (returns true) and
+      // falls through to the normal owner/admin / member-carve-out branches
+      // below as usual. This does NOT apply to isPublishApprove below — that
+      // branch is a completely separate grant for the TARGET board's Owner,
+      // who by definition isn't isTaskBoardMember of the current board at
+      // all, so this function (scoped inside that AND-group) never runs for
+      // them; isPublishApprove has its own, independent correctness checks.
       function isSafeBoardMove(before, after, uid) {
         return !after.diff(before).affectedKeys().hasOnly(['boardId'])
-          || before.userId == uid;
+          || (
+            before.userId == uid
+            && roleOf(
+                 get(/databases/$(database)/documents/boards/$(after.boardId)).data,
+                 uid
+               ) in ['owner', 'admin']
+          );
       }
 
       // The corresponding OR-branch grant: a plain Member (not owner/admin)
@@ -246,8 +329,58 @@ service cloud.firestore {
           && after.deleteRequest.requestedBy == uid;
       }
 
+      // The TARGET board's Owner is, by definition, generally NOT a member
+      // of the task's current board (its requester's private board) — so
+      // isTaskBoardMember alone would lock them out of even reading the
+      // task to decide on it. This grants read access specifically when a
+      // pending publishRequest names a board this uid owns. The extra
+      // get() here is the one described in the PR: one additional read
+      // per rule evaluation, on top of isTaskBoardMember's own get().
+      function isPublishTargetOwner(task, uid) {
+        return task.get('publishRequest', null) != null
+          && roleOf(
+               get(/databases/$(database)/documents/boards/$(task.publishRequest.targetBoardId)).data,
+               uid
+             ) == 'owner';
+      }
+
+      // Approve: boardId becomes EXACTLY the board named in the pending
+      // request, and publishRequest clears to null, in the SAME write —
+      // both conditions together prove the task actually lands on the
+      // board the request named (not some other value the approving owner
+      // might substitute), and that the request doesn't linger stale
+      // afterward. Deliberately == 'owner', not in ['owner','admin'] — the
+      // spec is explicit that only the target board's OWNER reviews these,
+      // unlike every other Owner/Admin-unified check in this file.
+      function isPublishApprove(before, after, uid) {
+        return before.get('publishRequest', null) != null
+          && after.diff(before).affectedKeys().hasOnly(['boardId', 'publishRequest'])
+          && after.boardId == before.publishRequest.targetBoardId
+          && after.get('publishRequest', null) == null
+          && roleOf(
+               get(/databases/$(database)/documents/boards/$(before.publishRequest.targetBoardId)).data,
+               uid
+             ) == 'owner';
+      }
+
+      // Reject: ONLY publishRequest clears to null — boardId must be
+      // untouched (hasOnly(['publishRequest']), not the two-field list
+      // approve allows), so the task stays exactly where it was.
+      function isPublishReject(before, after, uid) {
+        return before.get('publishRequest', null) != null
+          && after.diff(before).affectedKeys().hasOnly(['publishRequest'])
+          && after.get('publishRequest', null) == null
+          && roleOf(
+               get(/databases/$(database)/documents/boards/$(before.publishRequest.targetBoardId)).data,
+               uid
+             ) == 'owner';
+      }
+
       allow read: if isSignedIn()
-        && isTaskBoardMember(resource.data.boardId, request.auth.uid);
+        && (
+          isTaskBoardMember(resource.data.boardId, request.auth.uid)
+          || isPublishTargetOwner(resource.data, request.auth.uid)
+        );
 
       // Owner-only-direct, on ANY task regardless of who created it —
       // Admin and Member (even the task's own creator) must go through
@@ -255,6 +388,12 @@ service cloud.firestore {
       // (ownerId == uid -> 'owner') already makes this work correctly for a
       // private board's sole member with no extra code: they're always
       // 'owner' there, so their own direct deletes are unaffected.
+      //
+      // Confirmed unchanged/not duplicated for deleteCollaborativeBoard's
+      // cascade: the acting user is that board's Owner, so
+      // roleOf(boardOfTask(theirOwnBoardId), uid) == 'owner' is already
+      // true for every task under it — this rule already permits deleting
+      // all of them, with no loosening needed.
       allow delete: if isSignedIn()
         && isTaskBoardMember(resource.data.boardId, request.auth.uid)
         && roleOf(boardOfTask(resource.data.boardId), request.auth.uid) == 'owner';
@@ -281,29 +420,52 @@ service cloud.firestore {
       // out's hasOnly() list. Private boards are unaffected: a private
       // board's sole member has no roles map, and roleOf()'s fallback
       // resolves ownerId == uid to 'owner', so they always take the
-      // unrestricted branch.
+      // unrestricted branch. This also covers the requester's own creation
+      // of publishRequest (null -> value) on their own private task without
+      // needing any dedicated carve-out: a private board's sole member is
+      // always 'owner' there via that same fallback, so the unconditional
+      // owner/admin branch already grants it, and isSafeBoardMove doesn't
+      // apply since affectedKeys() is ['publishRequest'], not ['boardId'].
+      //
+      // The publish-approval branches below are a SEPARATE top-level OR,
+      // outside this whole isTaskBoardMember-gated group — deliberately.
+      // The target board's Owner reviewing a request is, by definition,
+      // generally not a member of the task's CURRENT board (the requester's
+      // private board) at all, so isTaskBoardMember(resource.data.boardId,
+      // uid) would be false for them and reject the write before ever
+      // reaching an OR-chain nested inside it. isPublishApprove/
+      // isPublishReject are fully self-contained (they independently prove
+      // the actor owns the referenced target board), so they don't need —
+      // and must not be gated by — isTaskBoardMember or isSafeBoardMove.
       allow update: if isSignedIn()
-        && isTaskBoardMember(resource.data.boardId, request.auth.uid)
         && (
-          roleOf(boardOfTask(resource.data.boardId), request.auth.uid) in ['owner', 'admin']
-          || isMemberCommentAppend(resource.data, request.resource.data)
-          || isMemberStatusRequest(resource.data, request.resource.data)
-          || isOwnCommentEdit(resource.data, request.resource.data)
-          || isCommentDelete(
-               resource.data,
-               request.resource.data,
-               boardOfTask(resource.data.boardId),
-               request.auth.uid
-             )
-          || isCreatorBoardMove(resource.data, request.resource.data, request.auth.uid)
-          || isCreatorStatusChange(resource.data, request.resource.data, request.auth.uid)
-          || isRequestDeleteChange(resource.data, request.resource.data, request.auth.uid)
-        )
-        // Independent of every branch above — including the unconditional
-        // owner/admin one — so a private/collaborative move specifically
-        // still requires being the task's creator no matter what role
-        // otherwise would have allowed this write.
-        && isSafeBoardMove(resource.data, request.resource.data, request.auth.uid);
+          (
+            isTaskBoardMember(resource.data.boardId, request.auth.uid)
+            && (
+              roleOf(boardOfTask(resource.data.boardId), request.auth.uid) in ['owner', 'admin']
+              || isMemberCommentAppend(resource.data, request.resource.data)
+              || isMemberStatusRequest(resource.data, request.resource.data)
+              || isOwnCommentEdit(resource.data, request.resource.data)
+              || isCommentDelete(
+                   resource.data,
+                   request.resource.data,
+                   boardOfTask(resource.data.boardId),
+                   request.auth.uid
+                 )
+              || isCreatorBoardMove(resource.data, request.resource.data, request.auth.uid)
+              || isCreatorStatusChange(resource.data, request.resource.data, request.auth.uid)
+              || isRequestDeleteChange(resource.data, request.resource.data, request.auth.uid)
+            )
+            // Independent of every branch in the group above — including
+            // the unconditional owner/admin one — so a private/
+            // collaborative move specifically still requires being the
+            // task's creator AND holding owner/admin on the target board,
+            // no matter what role otherwise would have allowed this write.
+            && isSafeBoardMove(resource.data, request.resource.data, request.auth.uid)
+          )
+          || isPublishApprove(resource.data, request.resource.data, request.auth.uid)
+          || isPublishReject(resource.data, request.resource.data, request.auth.uid)
+        );
     }
 
     match /users/{uid} {
@@ -314,7 +476,7 @@ service cloud.firestore {
     // Public lookup table so a non-member can resolve an invite code to a
     // boardId without needing read access to the board itself (boards are
     // member-only readable, above). Written only at board-creation time by
-    // getOrCreateCollaborativeBoard.
+    // createCollaborativeBoard.
     match /inviteCodes/{code} {
       allow read: if isSignedIn();
 
@@ -346,6 +508,13 @@ service cloud.firestore {
         );
 
       allow update: if isSignedIn()
+        && roleOf(boardOf(resource.data.boardId), request.auth.uid) in ['owner', 'admin'];
+
+      // Previously missing entirely — needed so deleteCollaborativeBoard's
+      // cascade can clean up a deleted board's joinRequests. Scoped to
+      // that board's Owner/Admin, consistent with who can already
+      // read/update join requests for it above.
+      allow delete: if isSignedIn()
         && roleOf(boardOf(resource.data.boardId), request.auth.uid) in ['owner', 'admin'];
     }
   }

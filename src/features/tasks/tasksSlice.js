@@ -8,10 +8,7 @@ import {
   updateDoc,
 } from 'firebase/firestore';
 import { db } from '../../firebase';
-import {
-  getOrCreateCollaborativeBoard,
-  getUserPrivateBoard,
-} from '../boards/boardsSlice';
+import { getUserPrivateBoard } from '../boards/boardsSlice';
 
 // Writes go straight to Firestore; the visible state change comes back
 // through the onSnapshot listener in ../../app/tasksListenerMiddleware.js,
@@ -51,12 +48,18 @@ export const editDescription = createAsyncThunk(
   },
 );
 
-export const moveTaskToCollaborative = createAsyncThunk(
-  'tasks/moveTaskToCollaborative',
-  async ({ taskId, uid }, { dispatch }) => {
-    const boardId = await dispatch(
-      getOrCreateCollaborativeBoard(uid),
-    ).unwrap();
+// A user can now own/join multiple collaborative boards, so a private task
+// moving to collaborative must target a SPECIFIC board (chosen in App.jsx's
+// publish picker) rather than a resolved singleton. Used directly when the
+// actor's role on targetBoardId is owner/admin (immediate move); a
+// member-role target goes through requestPublish below instead. Also used
+// by approvePublishRequest's own updateDoc, which duplicates this shape
+// rather than calling this thunk, since it must clear publishRequest in the
+// SAME write (see firestore.rules — the approve shape requires both fields
+// changing together).
+export const moveTaskToBoard = createAsyncThunk(
+  'tasks/moveTaskToBoard',
+  async ({ taskId, boardId }) => {
     await updateDoc(doc(db, 'tasks', taskId), { boardId });
   },
 );
@@ -113,14 +116,18 @@ export const requestStatusChange = createAsyncThunk(
         'A status change request is already pending for this task.',
       );
     }
-    await updateDoc(doc(db, 'tasks', taskId), {
-      statusRequest: {
-        requestedBy: uid,
-        requestedByEmail: email,
-        requestedStatus,
-        createdAt: serverTimestamp(),
-      },
-    });
+    try {
+      await updateDoc(doc(db, 'tasks', taskId), {
+        statusRequest: {
+          requestedBy: uid,
+          requestedByEmail: email,
+          requestedStatus,
+          createdAt: serverTimestamp(),
+        },
+      });
+    } catch (err) {
+      return rejectWithValue(err.message || 'Could not submit request.');
+    }
   },
 );
 
@@ -155,13 +162,17 @@ export const requestDelete = createAsyncThunk(
         'A delete request is already pending for this task.',
       );
     }
-    await updateDoc(doc(db, 'tasks', taskId), {
-      deleteRequest: {
-        requestedBy: uid,
-        requestedByEmail: email,
-        createdAt: serverTimestamp(),
-      },
-    });
+    try {
+      await updateDoc(doc(db, 'tasks', taskId), {
+        deleteRequest: {
+          requestedBy: uid,
+          requestedByEmail: email,
+          createdAt: serverTimestamp(),
+        },
+      });
+    } catch (err) {
+      return rejectWithValue(err.message || 'Could not submit delete request.');
+    }
   },
 );
 
@@ -179,6 +190,72 @@ export const rejectDeleteRequest = createAsyncThunk(
   'tasks/rejectDeleteRequest',
   async ({ taskId }) => {
     await updateDoc(doc(db, 'tasks', taskId), { deleteRequest: null });
+  },
+);
+
+// Publishing a private task to a collaborative board where the actor only
+// holds Member role there (not owner/admin) needs that board's Owner to
+// approve — same request/approve/reject shape as status/delete requests
+// above. The task stays on the requester's own private board (boardId
+// unchanged) until approved; targetBoardName is stored on the request
+// purely for display (App.jsx's "Pending: → X" badge) without a second
+// lookup, same reasoning as statusRequest's requestedByEmail.
+export const requestPublish = createAsyncThunk(
+  'tasks/requestPublish',
+  async (
+    { taskId, targetBoardId, targetBoardName, uid, email },
+    { getState, rejectWithValue },
+  ) => {
+    const task = getState().tasks.find((t) => t.id === taskId);
+    if (task?.publishRequest) {
+      return rejectWithValue(
+        'A publish request is already pending for this task.',
+      );
+    }
+    try {
+      await updateDoc(doc(db, 'tasks', taskId), {
+        publishRequest: {
+          requestedBy: uid,
+          requestedByEmail: email,
+          targetBoardId,
+          targetBoardName,
+          createdAt: serverTimestamp(),
+        },
+      });
+    } catch (err) {
+      return rejectWithValue(err.message || 'Could not submit publish request.');
+    }
+  },
+);
+
+// Called by the TARGET board's Owner, who is generally not a member of the
+// task's current (private) board at all — see firestore.rules' dedicated
+// isPublishApprove/isPublishReject branches, which grant this independently
+// of the normal isTaskBoardMember-gated path. boardId and publishRequest
+// must change together in one write (the rule requires both, to prove the
+// task actually lands on the board the request named, not some other one).
+export const approvePublishRequest = createAsyncThunk(
+  'tasks/approvePublishRequest',
+  async ({ taskId, targetBoardId }, { rejectWithValue }) => {
+    try {
+      await updateDoc(doc(db, 'tasks', taskId), {
+        boardId: targetBoardId,
+        publishRequest: null,
+      });
+    } catch (err) {
+      return rejectWithValue(err.message || 'Could not publish task.');
+    }
+  },
+);
+
+export const rejectPublishRequest = createAsyncThunk(
+  'tasks/rejectPublishRequest',
+  async ({ taskId }, { rejectWithValue }) => {
+    try {
+      await updateDoc(doc(db, 'tasks', taskId), { publishRequest: null });
+    } catch (err) {
+      return rejectWithValue(err.message || 'Could not reject publish request.');
+    }
   },
 );
 

@@ -4,7 +4,9 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth } from '../../firebase';
 import { authStateChanged } from './authSlice';
-import App from '../../App.jsx';
+import BoardHub from '../boards/BoardHub.jsx';
+import BoardWorkspace from '../boards/BoardWorkspace.jsx';
+import PrivateWorkspace from '../boards/PrivateWorkspace.jsx';
 import LandingPage from '../../components/LandingPage.jsx';
 import ProtectedRoute from '../../components/ProtectedRoute.jsx';
 import ProfilePage from '../profile/ProfilePage.jsx';
@@ -40,7 +42,23 @@ function AuthGate() {
         path="/dashboard"
         element={
           <ProtectedRoute>
-            <App />
+            <PrivateWorkspace />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/dashboard/boards"
+        element={
+          <ProtectedRoute>
+            <BoardHub />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/dashboard/board/:boardId"
+        element={
+          <ProtectedRoute>
+            <BoardWorkspace />
           </ProtectedRoute>
         }
       />

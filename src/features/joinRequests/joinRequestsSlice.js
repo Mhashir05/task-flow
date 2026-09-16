@@ -13,45 +13,57 @@ import { db } from '../../firebase';
 export const submitJoinRequest = createAsyncThunk(
   'joinRequests/submitJoinRequest',
   async ({ inviteCode, uid, email }, { rejectWithValue }) => {
-    const normalizedCode = inviteCode.trim().toUpperCase();
-    // Looked up via the public inviteCodes collection rather than querying
-    // boards directly — boards are member-only readable, so a prospective
-    // joiner (not yet a member) could never find one by invite code
-    // otherwise. See firestore.rules.
-    const codeSnap = await getDoc(doc(db, 'inviteCodes', normalizedCode));
-    if (!codeSnap.exists()) {
-      return rejectWithValue('No board found with that invite code.');
-    }
+    try {
+      const normalizedCode = inviteCode.trim().toUpperCase();
+      // Looked up via the public inviteCodes collection rather than querying
+      // boards directly — boards are member-only readable, so a prospective
+      // joiner (not yet a member) could never find one by invite code
+      // otherwise. See firestore.rules.
+      const codeSnap = await getDoc(doc(db, 'inviteCodes', normalizedCode));
+      if (!codeSnap.exists()) {
+        return rejectWithValue('No board found with that invite code.');
+      }
 
-    await addDoc(collection(db, 'joinRequests'), {
-      boardId: codeSnap.data().boardId,
-      requesterUid: uid,
-      requesterEmail: email,
-      status: 'pending',
-      createdAt: serverTimestamp(),
-    });
+      await addDoc(collection(db, 'joinRequests'), {
+        boardId: codeSnap.data().boardId,
+        requesterUid: uid,
+        requesterEmail: email,
+        status: 'pending',
+        createdAt: serverTimestamp(),
+      });
+    } catch (err) {
+      return rejectWithValue(err.message || 'Could not submit join request.');
+    }
   },
 );
 
 export const approveJoinRequest = createAsyncThunk(
   'joinRequests/approveJoinRequest',
-  async ({ requestId, boardId, requesterUid }) => {
-    await updateDoc(doc(db, 'boards', boardId), {
-      members: arrayUnion(requesterUid),
-      [`roles.${requesterUid}`]: 'member',
-    });
-    await updateDoc(doc(db, 'joinRequests', requestId), {
-      status: 'approved',
-    });
+  async ({ requestId, boardId, requesterUid }, { rejectWithValue }) => {
+    try {
+      await updateDoc(doc(db, 'boards', boardId), {
+        members: arrayUnion(requesterUid),
+        [`roles.${requesterUid}`]: 'member',
+      });
+      await updateDoc(doc(db, 'joinRequests', requestId), {
+        status: 'approved',
+      });
+    } catch (err) {
+      return rejectWithValue(err.message || 'Could not approve join request.');
+    }
   },
 );
 
 export const rejectJoinRequest = createAsyncThunk(
   'joinRequests/rejectJoinRequest',
-  async ({ requestId }) => {
-    await updateDoc(doc(db, 'joinRequests', requestId), {
-      status: 'rejected',
-    });
+  async ({ requestId }, { rejectWithValue }) => {
+    try {
+      await updateDoc(doc(db, 'joinRequests', requestId), {
+        status: 'rejected',
+      });
+    } catch (err) {
+      return rejectWithValue(err.message || 'Could not reject join request.');
+    }
   },
 );
 

@@ -1,30 +1,68 @@
 import { useEffect, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { getMemberRole, renameBoard } from './boardsSlice';
+import { useNavigate } from 'react-router-dom';
+import { collection, onSnapshot, query, where } from 'firebase/firestore';
+import { db } from '../../firebase';
+import {
+  deleteCollaborativeBoard,
+  getMemberRole,
+  leaveBoard,
+  renameBoard,
+} from './boardsSlice';
 import {
   approveJoinRequest,
   rejectJoinRequest,
-  submitJoinRequest,
 } from '../joinRequests/joinRequestsSlice';
+import {
+  approvePublishRequest,
+  rejectPublishRequest,
+} from '../tasks/tasksSlice';
 
-function CollaborativePanel() {
+// Board-management controls (rename, invite code, leave, delete, pending
+// join/publish request review) for the SPECIFIC board BoardWorkspace has
+// already confirmed the viewer has access to — `board` is passed down
+// directly rather than re-derived, since the workspace already looked it
+// up and gated rendering on it existing. No "no board selected" state
+// anymore: that concept belonged to the old shared-page design where this
+// panel could render before any board was chosen. The hub (BoardHub.jsx)
+// now owns board selection entirely.
+function CollaborativePanel({ board }) {
   const dispatch = useDispatch();
+  const navigate = useNavigate();
   const user = useSelector((state) => state.auth.user);
-  const boards = useSelector((state) => state.boards.list);
-  const activeBoardId = useSelector((state) => state.boards.activeBoardId);
   const pendingRequests = useSelector((state) => state.joinRequests.pending);
-  const joinStatus = useSelector((state) => state.joinRequests.status);
-  const joinError = useSelector((state) => state.joinRequests.error);
 
-  const activeBoard = boards.find((b) => b.id === activeBoardId) ?? null;
-  const myRole = getMemberRole(activeBoard, user?.uid);
+  const myRole = getMemberRole(board, user?.uid);
   const canApprove = myRole === 'owner' || myRole === 'admin';
   const isOwner = myRole === 'owner';
+  const canLeave = myRole === 'admin' || myRole === 'member';
 
-  const [inviteCodeInput, setInviteCodeInput] = useState('');
   const [feedback, setFeedback] = useState('');
   const [isRenaming, setIsRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState('');
+  const [confirmingLeave, setConfirmingLeave] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  // Tasks that name THIS board as a pending publishRequest.targetBoardId —
+  // these still live on the requester's own (usually private) board, so
+  // this can't reuse tasksListenerMiddleware.js's boardId-scoped listener;
+  // it needs its own query on a different field entirely. Owner-only,
+  // matching who's allowed to approve/reject (see firestore.rules'
+  // isPublishApprove/isPublishReject — Admin does not get this power).
+  const [publishRequests, setPublishRequests] = useState([]);
+
+  useEffect(() => {
+    if (!isOwner) return undefined;
+    const publishQuery = query(
+      collection(db, 'tasks'),
+      where('publishRequest.targetBoardId', '==', board.id),
+    );
+    const unsubscribe = onSnapshot(publishQuery, (snapshot) => {
+      setPublishRequests(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    return unsubscribe;
+  }, [isOwner, board.id]);
+
+  const visiblePublishRequests = isOwner ? publishRequests : [];
 
   useEffect(() => {
     if (!feedback) return;
@@ -33,7 +71,7 @@ function CollaborativePanel() {
   }, [feedback]);
 
   function handleStartRename() {
-    setNameDraft(activeBoard?.name ?? '');
+    setNameDraft(board.name ?? '');
     setIsRenaming(true);
   }
 
@@ -44,8 +82,8 @@ function CollaborativePanel() {
 
   function handleSaveRename() {
     const trimmed = nameDraft.trim();
-    if (!trimmed || !activeBoard) return;
-    dispatch(renameBoard({ boardId: activeBoard.id, newName: trimmed }))
+    if (!trimmed) return;
+    dispatch(renameBoard({ boardId: board.id, newName: trimmed }))
       .unwrap()
       .then(() => {
         setIsRenaming(false);
@@ -54,21 +92,36 @@ function CollaborativePanel() {
       .catch((message) => setFeedback(message || 'Could not rename board.'));
   }
 
-  function handleJoinBoard() {
-    if (!user?.uid || inviteCodeInput.trim() === '') return;
-    dispatch(
-      submitJoinRequest({
-        inviteCode: inviteCodeInput,
-        uid: user.uid,
-        email: user.email,
-      }),
-    )
+  // Both of these navigate back to the hub on success, rather than leaving
+  // the viewer on a workspace page for a board they just left/deleted —
+  // BoardWorkspace's own generic "board disappeared" effect exists for the
+  // case where that happens from SOMEWHERE ELSE (another session, another
+  // member), but here we already know exactly what happened, so we can
+  // navigate immediately with a precise message instead of waiting for
+  // that effect to notice via the live listener.
+  function handleConfirmLeave() {
+    if (!user?.uid) return;
+    dispatch(leaveBoard({ boardId: board.id, uid: user.uid }))
       .unwrap()
       .then(() => {
-        setInviteCodeInput('');
-        setFeedback('Join request submitted');
+        navigate('/dashboard/boards', {
+          state: { feedback: 'You left this board.' },
+        });
       })
-      .catch(() => {});
+      .catch((message) => setFeedback(message || 'Could not leave board.'));
+    setConfirmingLeave(false);
+  }
+
+  function handleConfirmDeleteBoard() {
+    dispatch(deleteCollaborativeBoard({ boardId: board.id }))
+      .unwrap()
+      .then(() => {
+        navigate('/dashboard/boards', {
+          state: { feedback: 'Board deleted.' },
+        });
+      })
+      .catch((message) => setFeedback(message || 'Could not delete board.'));
+    setConfirmingDelete(false);
   }
 
   function handleApproveRequest(request) {
@@ -78,13 +131,42 @@ function CollaborativePanel() {
         boardId: request.boardId,
         requesterUid: request.requesterUid,
       }),
-    );
-    setFeedback('Join request approved');
+    )
+      .unwrap()
+      .then(() => setFeedback('Join request approved'))
+      .catch((message) =>
+        setFeedback(message || 'Could not approve join request.'),
+      );
   }
 
   function handleRejectRequest(requestId) {
-    dispatch(rejectJoinRequest({ requestId }));
-    setFeedback('Join request rejected');
+    dispatch(rejectJoinRequest({ requestId }))
+      .unwrap()
+      .then(() => setFeedback('Join request rejected'))
+      .catch((message) =>
+        setFeedback(message || 'Could not reject join request.'),
+      );
+  }
+
+  function handleApprovePublish(request) {
+    dispatch(
+      approvePublishRequest({
+        taskId: request.id,
+        targetBoardId: request.publishRequest.targetBoardId,
+      }),
+    )
+      .unwrap()
+      .then(() => setFeedback('Task published to this board'))
+      .catch((message) => setFeedback(message || 'Could not publish task.'));
+  }
+
+  function handleRejectPublish(taskId) {
+    dispatch(rejectPublishRequest({ taskId }))
+      .unwrap()
+      .then(() => setFeedback('Publish request rejected'))
+      .catch((message) =>
+        setFeedback(message || 'Could not reject publish request.'),
+      );
   }
 
   return (
@@ -110,7 +192,7 @@ function CollaborativePanel() {
           </span>
         ) : (
           <>
-            <h3 className="board-name">{activeBoard?.name ?? 'Board'}</h3>
+            <h3 className="board-name">{board.name}</h3>
             {isOwner && (
               <button
                 type="button"
@@ -120,35 +202,69 @@ function CollaborativePanel() {
                 Rename
               </button>
             )}
+            {canLeave &&
+              (confirmingLeave ? (
+                <span className="card-confirm">
+                  <span>Leave this board?</span>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingLeave(false)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="danger"
+                    onClick={handleConfirmLeave}
+                  >
+                    Leave Board
+                  </button>
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  className="rename-board-btn"
+                  onClick={() => setConfirmingLeave(true)}
+                >
+                  Leave Board
+                </button>
+              ))}
+            {isOwner &&
+              (confirmingDelete ? (
+                <span className="card-confirm">
+                  <span>Delete this board and all its tasks?</span>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingDelete(false)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="danger"
+                    onClick={handleConfirmDeleteBoard}
+                  >
+                    Delete Board
+                  </button>
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  className="rename-board-btn"
+                  onClick={() => setConfirmingDelete(true)}
+                >
+                  Delete Board
+                </button>
+              ))}
           </>
         )}
       </div>
 
-      {activeBoard?.inviteCode && (
+      {board.inviteCode && (
         <p className="invite-code">
-          Invite code: <strong>{activeBoard.inviteCode}</strong>
+          Invite code: <strong>{board.inviteCode}</strong>
         </p>
       )}
-
-      <div className="quest-form">
-        <div className="field field--title">
-          <label htmlFor="invite-code-input">Join a board</label>
-          <input
-            id="invite-code-input"
-            value={inviteCodeInput}
-            onChange={(e) => setInviteCodeInput(e.target.value)}
-            placeholder="Enter invite code"
-          />
-          {joinError && <p className="field-error">{joinError}</p>}
-        </div>
-        <button
-          type="button"
-          onClick={handleJoinBoard}
-          disabled={joinStatus === 'submitting'}
-        >
-          {joinStatus === 'submitting' ? 'Submitting…' : 'Request to join'}
-        </button>
-      </div>
 
       {canApprove && pendingRequests.length > 0 && (
         <div className="join-requests">
@@ -176,7 +292,38 @@ function CollaborativePanel() {
         </div>
       )}
 
-      {feedback && <p className="collaborative-panel-feedback">{feedback}</p>}
+      {visiblePublishRequests.length > 0 && (
+        <div className="join-requests">
+          <h3>Pending publish requests</h3>
+          <ul>
+            {visiblePublishRequests.map((request) => (
+              <li key={request.id}>
+                <span>
+                  &ldquo;{request.title}&rdquo; from{' '}
+                  {request.publishRequest?.requestedByEmail}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleApprovePublish(request)}
+                >
+                  Approve
+                </button>
+                <button
+                  type="button"
+                  className="danger"
+                  onClick={() => handleRejectPublish(request.id)}
+                >
+                  Reject
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {feedback && (
+        <div className="collaborative-panel-feedback">{feedback}</div>
+      )}
     </div>
   );
 }

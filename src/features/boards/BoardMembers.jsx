@@ -2,7 +2,12 @@ import { useEffect, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../../firebase';
-import { getMemberRole, removeMember, updateMemberRole } from './boardsSlice';
+import {
+  getMemberRole,
+  removeMember,
+  transferOwnership,
+  updateMemberRole,
+} from './boardsSlice';
 
 const ROLE_LABEL = { owner: 'Owner', admin: 'Admin', member: 'Member' };
 
@@ -24,6 +29,10 @@ function BoardMembers() {
   });
   const [feedback, setFeedback] = useState('');
   const [searchText, setSearchText] = useState('');
+  // Which member row currently has its "transfer ownership to them?" confirm
+  // step open — same open-confirm pattern as App.jsx's confirmingId for task
+  // delete, given how significant this action is.
+  const [transferConfirmUid, setTransferConfirmUid] = useState(null);
 
   useEffect(() => {
     if (!activeBoard) return;
@@ -91,6 +100,19 @@ function BoardMembers() {
       .unwrap()
       .then(() => setFeedback('Member removed'))
       .catch((message) => setFeedback(message || 'Could not remove member.'));
+  }
+
+  function handleConfirmTransfer(targetUid) {
+    if (!activeBoard) return;
+    dispatch(
+      transferOwnership({ boardId: activeBoard.id, newOwnerUid: targetUid }),
+    )
+      .unwrap()
+      .then(() => setFeedback('Ownership transferred'))
+      .catch((message) =>
+        setFeedback(message || 'Could not transfer ownership.'),
+      );
+    setTransferConfirmUid(null);
   }
 
   return (
@@ -166,6 +188,32 @@ function BoardMembers() {
                         <option value="admin">Admin</option>
                       </select>
                     )}
+                    {canManageRoles &&
+                      (transferConfirmUid === member.uid ? (
+                        <span className="card-confirm">
+                          <span>Make owner?</span>
+                          <button
+                            type="button"
+                            onClick={() => setTransferConfirmUid(null)}
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            className="danger"
+                            onClick={() => handleConfirmTransfer(member.uid)}
+                          >
+                            Confirm
+                          </button>
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setTransferConfirmUid(member.uid)}
+                        >
+                          Transfer Ownership
+                        </button>
+                      ))}
                     {canRemove && (
                       <button
                         type="button"

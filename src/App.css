@@ -100,6 +100,44 @@
   font-weight: var(--fw-semibold);
 }
 
+/* ── Board hub (/dashboard) ─────────────────────────────── */
+/* Two visually distinct glass cards side by side (stacking on narrow
+   viewports) — deliberately separate elements, not one shared card, so
+   "Your Boards" and "Joined Boards" read as different sections at a
+   glance rather than one undifferentiated list. */
+.board-hub-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  align-items: start;
+  gap: var(--space-4);
+  margin-top: var(--space-6);
+}
+
+@media (max-width: 719px) {
+  .board-hub-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.board-hub-card {
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: var(--glass-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--glass-shadow);
+}
+
+.board-hub-card .board-list-section {
+  padding-bottom: 0;
+  margin-bottom: 0;
+  border-bottom: none;
+}
+
 .collaborative-panel {
   padding: var(--space-4);
   margin: var(--space-4) 0 0;
@@ -114,9 +152,118 @@
   box-shadow: var(--glass-shadow);
 }
 
+.board-list-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-bottom: var(--space-3);
+  margin-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.board-list-heading {
+  margin: 0;
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-semibold);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.board-list-empty {
+  margin: 0;
+  font-size: var(--fs-meta);
+  color: var(--text-subtle);
+}
+
+.board-list-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.delete-all-confirm input {
+  width: 130px;
+  height: 30px;
+  padding: 0 var(--space-2);
+  font-size: var(--fs-meta);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: rgba(255, 255, 255, 0.7);
+  color: var(--text);
+}
+
+.my-boards-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.my-boards-list li:last-child .my-board-row {
+  border-bottom: none;
+}
+
+.my-board-row-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.my-board-row-item:last-child {
+  border-bottom: none;
+}
+
+.my-board-row-item .my-board-row {
+  flex: 1;
+  min-width: 0;
+  border-bottom: none;
+}
+
+.my-board-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-left: 3px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+.my-board-row:hover {
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--text);
+}
+
+.my-board-row.active {
+  background: var(--accent-weak);
+  border-left-color: var(--accent);
+  color: var(--text);
+  font-weight: var(--fw-semibold);
+}
+
+.my-board-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 .board-name-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-2);
 }
 
@@ -128,6 +275,8 @@
 }
 
 .rename-board-btn {
+  display: inline-flex;
+  align-items: center;
   height: 26px;
   padding: 0 var(--space-2);
   font-size: var(--fs-meta);
@@ -136,6 +285,8 @@
   border: 1px solid var(--border-strong);
   background: rgba(255, 255, 255, 0.6);
   color: var(--text-muted);
+  text-decoration: none;
+  width: fit-content;
 }
 
 .rename-board-btn:hover {
@@ -226,7 +377,22 @@
   margin: var(--space-5) 0 0;
 }
 
-.view-toggle button {
+/* Shared My Tasks / Collaborative Boards toggle, rendered above the page
+   title on both /dashboard and /dashboard/boards. Distinct wrapper from
+   .view-toggle (Board/Team sub-tabs) since it needs no top margin — it's
+   the first element in .brand rather than sitting below a header — but
+   reuses the same pill button visuals. */
+.board-scope-toggle {
+  display: flex;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+}
+
+.view-toggle button,
+.view-toggle a,
+.board-scope-toggle a {
+  display: inline-flex;
+  align-items: center;
   height: 36px;
   padding: 0 var(--space-4);
   background: rgba(255, 255, 255, 0.45);
@@ -235,6 +401,7 @@
   color: var(--text-muted);
   font-size: var(--fs-meta);
   font-weight: var(--fw-medium);
+  text-decoration: none;
   cursor: pointer;
   transition:
     background var(--dur-fast) var(--ease),
@@ -243,12 +410,16 @@
     box-shadow var(--dur-fast) var(--ease);
 }
 
-.view-toggle button:hover {
+.view-toggle button:hover,
+.view-toggle a:hover,
+.board-scope-toggle a:hover {
   background: rgba(255, 255, 255, 0.7);
   color: var(--text);
 }
 
-.view-toggle button.active {
+.view-toggle button.active,
+.view-toggle a.active,
+.board-scope-toggle a.active {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
@@ -256,7 +427,9 @@
   box-shadow: 0 4px 14px rgba(45, 91, 255, 0.28);
 }
 
-.view-toggle button:focus-visible {
+.view-toggle button:focus-visible,
+.view-toggle a:focus-visible,
+.board-scope-toggle a:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -712,26 +885,81 @@ input, select, button, textarea {
   color: var(--text-subtle);
 }
 
-.make-collaborative {
+/* Shared shape for every action "pill" in .card-footer — Make Private/
+   Collaborative, Request/Approve/Reject Delete, and the non-interactive
+   Pending-deletion label — so this row doesn't mix a 30px select, a 32px
+   icon button, and text buttons of several different heights/radii/fonts.
+   Color/intent is layered on top via a second class (.make-collaborative,
+   .danger, or left as the plain default here). white-space: nowrap is the
+   actual fix for "Request Delete" wrapping onto two lines — it was
+   previously reusing .delete-x, a fixed-size round icon-button class never
+   meant to hold text. */
+.card-pill-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  padding: 0 var(--space-3);
   font-family: var(--font-mono);
   font-size: var(--fs-meta);
   font-weight: var(--fw-medium);
-  padding: 1px var(--space-2);
-  background: transparent;
-  border: 1px solid var(--accent);
   border-radius: var(--radius-pill);
-  color: var(--accent);
+  white-space: nowrap;
   cursor: pointer;
-  transition: background var(--dur-fast) var(--ease);
+  border: 1px solid var(--border-strong);
+  background: rgba(255, 255, 255, 0.6);
+  color: var(--text);
+  text-decoration: none;
+  width: fit-content;
+  transition:
+    background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+.card-pill-btn:hover {
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.card-pill-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.card-pill-btn.danger {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: #fff;
+}
+
+.card-pill-btn.danger:hover {
+  opacity: 0.9;
+}
+
+/* Non-interactive "pending" state — same box model as the pills above so
+   it doesn't visually jump the row, just muted/disabled-looking since
+   there's no action to take here. */
+.card-pill-btn--static {
+  cursor: default;
+  font-style: italic;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.4);
+}
+
+.delete-request-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.make-collaborative {
+  background: transparent;
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .make-collaborative:hover {
   background: var(--accent-weak);
-}
-
-.make-collaborative:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 
 .delete-x {
@@ -793,6 +1021,11 @@ input, select, button, textarea {
   outline-offset: 2px;
 }
 
+.card-confirm button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 
 /* ── Inline card edit / expand ──────────────────────────── */
 /* overflow:hidden + height set inline by GSAP (App.jsx) during the
@@ -845,6 +1078,7 @@ input, select, button, textarea {
 .status-request-actions,
 .status-request-form {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-1);
 }
@@ -1158,7 +1392,8 @@ input, select, button, textarea {
   }
 
   .card-status,
-  .card-confirm button {
+  .card-confirm button,
+  .card-pill-btn {
     height: 40px;
   }
 

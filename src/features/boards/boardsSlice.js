@@ -6,11 +6,31 @@ import {
   doc,
   getDocs,
   query,
+  serverTimestamp,
   setDoc,
   updateDoc,
   where,
+  writeBatch,
 } from 'firebase/firestore';
 import { db } from '../../firebase';
+
+// Firestore caps a single batch at 500 write operations. Splits a flat list
+// of document refs to delete into sequential batches, awaiting each before
+// starting the next (not run concurrently — see deleteCollaborativeBoard's
+// comment on why the board document must be the very last ref in the array
+// regardless of how this chunking splits it).
+const BATCH_LIMIT = 500;
+
+async function deleteRefsInBatches(refs) {
+  for (let i = 0; i < refs.length; i += BATCH_LIMIT) {
+    const batch = writeBatch(db);
+    for (const ref of refs.slice(i, i + BATCH_LIMIT)) {
+      batch.delete(ref);
+    }
+    // eslint-disable-next-line no-await-in-loop
+    await batch.commit();
+  }
+}
 
 // Resolves a member's role with a fallback for boards created before the
 // roles map existed: the owner defaults to 'owner' and anyone else in
@@ -48,42 +68,37 @@ export const fetchUserBoards = createAsyncThunk(
   },
 );
 
-// Every user gets at most one owned collaborative board — reuse it if it
-// already exists instead of creating a new one on every "make collaborative".
-export const getOrCreateCollaborativeBoard = createAsyncThunk(
-  'boards/getOrCreateCollaborativeBoard',
-  async (uid, { dispatch }) => {
-    const existingQuery = query(
-      collection(db, 'boards'),
-      where('ownerId', '==', uid),
-      where('type', '==', 'collaborative'),
-    );
-    const existingSnap = await getDocs(existingQuery);
-    let boardId;
-    if (!existingSnap.empty) {
-      boardId = existingSnap.docs[0].id;
-    } else {
+// A user can now own multiple collaborative boards — this always creates a
+// NEW one (no get-or-create singleton check), so "Create New Board" can be
+// used any number of times. Same setDoc shape as the old singleton version,
+// plus createdAt (previously missing on collaborative boards, unlike
+// private ones — added here for consistency).
+export const createCollaborativeBoard = createAsyncThunk(
+  'boards/createCollaborativeBoard',
+  async ({ uid, name }, { dispatch, rejectWithValue }) => {
+    try {
       const boardRef = doc(collection(db, 'boards'));
       const inviteCode = generateInviteCode();
       await setDoc(boardRef, {
-        name: 'Team Board',
+        name: name && name.trim() !== '' ? name.trim() : 'Team Board',
         ownerId: uid,
         type: 'collaborative',
         members: [uid],
         roles: { [uid]: 'owner' },
         inviteCode,
+        createdAt: serverTimestamp(),
       });
-      // Public-lookup record so a non-member can resolve an invite code to
-      // a boardId without needing read access to the board document itself
+      // Public-lookup record so a non-member can resolve an invite code to a
+      // boardId without needing read access to the board document itself
       // (boards are member-only readable — see firestore.rules).
       await setDoc(doc(db, 'inviteCodes', inviteCode), { boardId: boardRef.id });
-      boardId = boardRef.id;
+      // Keep boards.list in sync so the new board is immediately visible/
+      // selectable instead of waiting for the live listener's next tick.
+      await dispatch(fetchUserBoards(uid));
+      return boardRef.id;
+    } catch (err) {
+      return rejectWithValue(err.message || 'Could not create board.');
     }
-    // Keep boards.list in sync so the new/existing collaborative board is
-    // immediately visible to the rest of the app (e.g. so activeBoardId can
-    // be pointed at it) instead of waiting for the next login.
-    await dispatch(fetchUserBoards(uid));
-    return boardId;
   },
 );
 
@@ -123,10 +138,14 @@ export const updateMemberRole = createAsyncThunk(
       return rejectWithValue("The board owner's role cannot be changed.");
     }
 
-    await updateDoc(doc(db, 'boards', boardId), {
-      [`roles.${targetUid}`]: newRole,
-    });
-    await dispatch(fetchUserBoards(currentUid));
+    try {
+      await updateDoc(doc(db, 'boards', boardId), {
+        [`roles.${targetUid}`]: newRole,
+      });
+      await dispatch(fetchUserBoards(currentUid));
+    } catch (err) {
+      return rejectWithValue(err.message || 'Could not update role.');
+    }
   },
 );
 
@@ -152,11 +171,15 @@ export const removeMember = createAsyncThunk(
       return rejectWithValue('You do not have permission to remove this member.');
     }
 
-    await updateDoc(doc(db, 'boards', boardId), {
-      members: arrayRemove(targetUid),
-      [`roles.${targetUid}`]: deleteField(),
-    });
-    await dispatch(fetchUserBoards(currentUid));
+    try {
+      await updateDoc(doc(db, 'boards', boardId), {
+        members: arrayRemove(targetUid),
+        [`roles.${targetUid}`]: deleteField(),
+      });
+      await dispatch(fetchUserBoards(currentUid));
+    } catch (err) {
+      return rejectWithValue(err.message || 'Could not remove member.');
+    }
   },
 );
 
@@ -174,8 +197,123 @@ export const renameBoard = createAsyncThunk(
       return rejectWithValue('Only the board owner can rename this board.');
     }
 
-    await updateDoc(doc(db, 'boards', boardId), { name: newName });
-    await dispatch(fetchUserBoards(currentUid));
+    try {
+      await updateDoc(doc(db, 'boards', boardId), { name: newName });
+      await dispatch(fetchUserBoards(currentUid));
+    } catch (err) {
+      return rejectWithValue(err.message || 'Could not rename board.');
+    }
+  },
+);
+
+// Owner-only. Cascades: every task on this board, every joinRequest for
+// it, its inviteCodes lookup doc, then the board document itself — in that
+// order, in one flat list of refs. Order matters beyond readability: the
+// board doc MUST be the very last ref, because the tasks/joinRequests/
+// inviteCode deletes all have firestore.rules that get() this board to
+// check the actor's role on it — deleting the board first (in an earlier
+// batch, if the cascade is large enough to split) would make those later
+// deletes fail rule evaluation against a board that no longer exists.
+// Batches commit sequentially (awaited in order), so keeping the board doc
+// last guarantees every other delete in this cascade is evaluated while it
+// still exists, regardless of where the 500-op chunk boundaries fall.
+export const deleteCollaborativeBoard = createAsyncThunk(
+  'boards/deleteCollaborativeBoard',
+  async ({ boardId }, { getState, rejectWithValue }) => {
+    const currentUid = getState().auth.user?.uid;
+    const board = getState().boards.list.find((b) => b.id === boardId);
+    if (!board) return rejectWithValue('Board not found.');
+    if (getMemberRole(board, currentUid) !== 'owner') {
+      return rejectWithValue('Only the board owner can delete this board.');
+    }
+
+    try {
+      const [tasksSnap, joinRequestsSnap] = await Promise.all([
+        getDocs(query(collection(db, 'tasks'), where('boardId', '==', boardId))),
+        getDocs(
+          query(collection(db, 'joinRequests'), where('boardId', '==', boardId)),
+        ),
+      ]);
+
+      const refs = [
+        ...tasksSnap.docs.map((d) => d.ref),
+        ...joinRequestsSnap.docs.map((d) => d.ref),
+      ];
+      if (board.inviteCode) {
+        refs.push(doc(db, 'inviteCodes', board.inviteCode));
+      }
+      refs.push(doc(db, 'boards', boardId));
+
+      await deleteRefsInBatches(refs);
+    } catch (err) {
+      return rejectWithValue(err.message || 'Could not delete board.');
+    }
+  },
+);
+
+// Owner-only; newOwnerUid must already be a member (checked here AND in
+// firestore.rules' isOwnershipTransfer, which additionally proves nothing
+// else in the document changed alongside it). The previous owner is
+// demoted to 'admin', not removed — they keep elevated access, just not
+// the top role.
+export const transferOwnership = createAsyncThunk(
+  'boards/transferOwnership',
+  async (
+    { boardId, newOwnerUid },
+    { getState, dispatch, rejectWithValue },
+  ) => {
+    const currentUid = getState().auth.user?.uid;
+    const board = getState().boards.list.find((b) => b.id === boardId);
+    if (!board) return rejectWithValue('Board not found.');
+    if (getMemberRole(board, currentUid) !== 'owner') {
+      return rejectWithValue('Only the board owner can transfer ownership.');
+    }
+    if (newOwnerUid === currentUid) {
+      return rejectWithValue(
+        'Choose a different member to transfer ownership to.',
+      );
+    }
+    if (!board.members?.includes(newOwnerUid)) {
+      return rejectWithValue('That user is not a member of this board.');
+    }
+
+    try {
+      await updateDoc(doc(db, 'boards', boardId), {
+        ownerId: newOwnerUid,
+        [`roles.${newOwnerUid}`]: 'owner',
+        [`roles.${currentUid}`]: 'admin',
+      });
+      await dispatch(fetchUserBoards(currentUid));
+    } catch (err) {
+      return rejectWithValue(err.message || 'Could not transfer ownership.');
+    }
+  },
+);
+
+// Admin/Member only — the Owner can't use this to leave their own board
+// (must transferOwnership or deleteCollaborativeBoard instead); enforced
+// here AND in firestore.rules' isSelfLeave, which also proves this can only
+// remove the ACTOR's own membership, never anyone else's.
+export const leaveBoard = createAsyncThunk(
+  'boards/leaveBoard',
+  async ({ boardId, uid }, { getState, dispatch, rejectWithValue }) => {
+    const board = getState().boards.list.find((b) => b.id === boardId);
+    if (!board) return rejectWithValue('Board not found.');
+    if (board.ownerId === uid) {
+      return rejectWithValue(
+        'The board owner cannot leave — transfer ownership or delete the board instead.',
+      );
+    }
+
+    try {
+      await updateDoc(doc(db, 'boards', boardId), {
+        members: arrayRemove(uid),
+        [`roles.${uid}`]: deleteField(),
+      });
+      await dispatch(fetchUserBoards(uid));
+    } catch (err) {
+      return rejectWithValue(err.message || 'Could not leave board.');
+    }
   },
 );
 
@@ -184,17 +322,21 @@ export const renameBoard = createAsyncThunk(
 // rather than trusting cached Redux state, same as the collaborative thunk.
 export const getUserPrivateBoard = createAsyncThunk(
   'boards/getUserPrivateBoard',
-  async (uid) => {
-    const privateQuery = query(
-      collection(db, 'boards'),
-      where('ownerId', '==', uid),
-      where('type', '==', 'private'),
-    );
-    const snapshot = await getDocs(privateQuery);
-    if (snapshot.empty) {
-      throw new Error('No private board found for this user.');
+  async (uid, { rejectWithValue }) => {
+    try {
+      const privateQuery = query(
+        collection(db, 'boards'),
+        where('ownerId', '==', uid),
+        where('type', '==', 'private'),
+      );
+      const snapshot = await getDocs(privateQuery);
+      if (snapshot.empty) {
+        return rejectWithValue('No private board found for this user.');
+      }
+      return snapshot.docs[0].id;
+    } catch (err) {
+      return rejectWithValue(err.message || 'Could not load your private board.');
     }
-    return snapshot.docs[0].id;
   },
 );
 
@@ -205,6 +347,12 @@ const boardsSlice = createSlice({
     joined: [],
     activeBoardId: null,
     status: 'idle', // 'idle' | 'loading'
+    // True once boardsListenerMiddleware.js's onSnapshot has delivered its
+    // FIRST snapshot for the current session — distinguishes "still loading"
+    // from "genuinely has no access to this board", which BoardWorkspace
+    // needs to render the correct one of those two states instead of
+    // flashing a false "no access" message before boards.list has arrived.
+    loaded: false,
   },
   reducers: {
     activeBoardSet: (state, action) => {
@@ -216,11 +364,13 @@ const boardsSlice = createSlice({
     boardsReceived: (state, action) => {
       state.list = action.payload.list;
       state.joined = action.payload.joined;
+      state.loaded = true;
     },
     boardsCleared: (state) => {
       state.list = [];
       state.joined = [];
       state.activeBoardId = null;
+      state.loaded = false;
     },
   },
   extraReducers: (builder) => {
