@@ -931,6 +931,11 @@ input, select, button, textarea {
   color: #fff;
 }
 
+.card-pill-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .card-pill-btn.danger:hover {
   opacity: 0.9;
 }
@@ -943,6 +948,46 @@ input, select, button, textarea {
   font-style: italic;
   color: var(--text-muted);
   background: rgba(255, 255, 255, 0.4);
+}
+
+/* The "publish to board" picker (select + Publish/Cancel) that replaces
+   the Make Collaborative pill in .card-footer while a target board is
+   being chosen. Sits inline with its neighbors — .card-pill-btn covers
+   the two buttons' sizing, this only needs to size/constrain the select
+   to match .card-status instead of stretching to browser-default width.
+   flex-wrap + max-width:100% (same class of fix as
+   .delete-request-actions) let the select and buttons drop to their own
+   line on a narrow card instead of pushing past its right edge; min-width:
+   0 on both this row and the select itself is needed alongside that —
+   as a flex item, a <select>'s default min-width:auto is its longest
+   <option>'s intrinsic width, which max-width alone can't shrink below. */
+.publish-picker {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 100%;
+  min-width: 0;
+}
+
+.publish-picker-select {
+  height: 30px;
+  min-width: 0;
+  max-width: 160px;
+  flex: 1 1 auto;
+  padding: 0 var(--space-2);
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.publish-picker-select:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-weak);
 }
 
 .delete-request-actions {

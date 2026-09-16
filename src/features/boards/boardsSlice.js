@@ -251,11 +251,12 @@ export const deleteCollaborativeBoard = createAsyncThunk(
   },
 );
 
-// Owner-only; newOwnerUid must already be a member (checked here AND in
-// firestore.rules' isOwnershipTransfer, which additionally proves nothing
-// else in the document changed alongside it). The previous owner is
-// demoted to 'admin', not removed — they keep elevated access, just not
-// the top role.
+// Owner-only; newOwnerUid must already be a member AND currently hold the
+// 'admin' role (checked here AND in firestore.rules' isOwnershipTransfer,
+// which additionally proves nothing else in the document changed alongside
+// it) — a plain Member must first be promoted to Admin before they can be
+// handed ownership. The previous owner is demoted to 'admin', not removed
+// — they keep elevated access, just not the top role.
 export const transferOwnership = createAsyncThunk(
   'boards/transferOwnership',
   async (
@@ -275,6 +276,9 @@ export const transferOwnership = createAsyncThunk(
     }
     if (!board.members?.includes(newOwnerUid)) {
       return rejectWithValue('That user is not a member of this board.');
+    }
+    if (getMemberRole(board, newOwnerUid) !== 'admin') {
+      return rejectWithValue('Ownership can only be transferred to an Admin.');
     }
 
     try {

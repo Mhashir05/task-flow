@@ -4,9 +4,11 @@ import authReducer from '../features/auth/authSlice';
 import profileReducer from '../features/profile/profileSlice';
 import boardsReducer from '../features/boards/boardsSlice';
 import joinRequestsReducer from '../features/joinRequests/joinRequestsSlice';
+import leaveRequestsReducer from '../features/leaveRequests/leaveRequestsSlice';
 import { tasksListenerMiddleware } from './tasksListenerMiddleware';
 import { boardsListenerMiddleware } from './boardsListenerMiddleware';
 import { joinRequestsListenerMiddleware } from './joinRequestsListenerMiddleware';
+import { leaveRequestsListenerMiddleware } from './leaveRequestsListenerMiddleware';
 
 export const store = configureStore({
   reducer: {
@@ -15,11 +17,13 @@ export const store = configureStore({
     profile: profileReducer,
     boards: boardsReducer,
     joinRequests: joinRequestsReducer,
+    leaveRequests: leaveRequestsReducer,
   },
   middleware: (getDefaultMiddleware) =>
     getDefaultMiddleware().prepend(
       tasksListenerMiddleware.middleware,
       boardsListenerMiddleware.middleware,
       joinRequestsListenerMiddleware.middleware,
+      leaveRequestsListenerMiddleware.middleware,
     ),
 });

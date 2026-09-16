@@ -946,8 +946,9 @@ export function BoardWorkspaceInner({ boardId }) {
                                   Pending: &rarr; {publishRequest.targetBoardName}
                                 </span>
                               ) : publishTargetTaskId === task.id ? (
-                                <span className="board-rename-form">
+                                <span className="publish-picker">
                                   <select
+                                    className="publish-picker-select"
                                     aria-label="Choose a board to publish to"
                                     value={publishBoardChoice[task.id] ?? ''}
                                     onChange={(e) =>
@@ -968,12 +969,17 @@ export function BoardWorkspaceInner({ boardId }) {
                                   </select>
                                   <button
                                     type="button"
+                                    className="card-pill-btn"
                                     disabled={!publishBoardChoice[task.id]}
                                     onClick={() => handleConfirmPublish(task.id)}
                                   >
                                     Publish
                                   </button>
-                                  <button type="button" onClick={handleCancelPublish}>
+                                  <button
+                                    type="button"
+                                    className="card-pill-btn"
+                                    onClick={handleCancelPublish}
+                                  >
                                     Cancel
                                   </button>
                                 </span>

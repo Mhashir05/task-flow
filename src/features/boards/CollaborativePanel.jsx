@@ -6,13 +6,16 @@ import { db } from '../../firebase';
 import {
   deleteCollaborativeBoard,
   getMemberRole,
-  leaveBoard,
   renameBoard,
 } from './boardsSlice';
 import {
   approveJoinRequest,
   rejectJoinRequest,
 } from '../joinRequests/joinRequestsSlice';
+import {
+  approveLeaveRequest,
+  rejectLeaveRequest,
+} from '../leaveRequests/leaveRequestsSlice';
 import {
   approvePublishRequest,
   rejectPublishRequest,
@@ -31,16 +34,15 @@ function CollaborativePanel({ board }) {
   const navigate = useNavigate();
   const user = useSelector((state) => state.auth.user);
   const pendingRequests = useSelector((state) => state.joinRequests.pending);
+  const pendingLeaveRequests = useSelector((state) => state.leaveRequests.pending);
 
   const myRole = getMemberRole(board, user?.uid);
   const canApprove = myRole === 'owner' || myRole === 'admin';
   const isOwner = myRole === 'owner';
-  const canLeave = myRole === 'admin' || myRole === 'member';
 
   const [feedback, setFeedback] = useState('');
   const [isRenaming, setIsRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState('');
-  const [confirmingLeave, setConfirmingLeave] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   // Tasks that name THIS board as a pending publishRequest.targetBoardId —
   // these still live on the requester's own (usually private) board, so
@@ -92,26 +94,13 @@ function CollaborativePanel({ board }) {
       .catch((message) => setFeedback(message || 'Could not rename board.'));
   }
 
-  // Both of these navigate back to the hub on success, rather than leaving
-  // the viewer on a workspace page for a board they just left/deleted —
-  // BoardWorkspace's own generic "board disappeared" effect exists for the
-  // case where that happens from SOMEWHERE ELSE (another session, another
-  // member), but here we already know exactly what happened, so we can
-  // navigate immediately with a precise message instead of waiting for
-  // that effect to notice via the live listener.
-  function handleConfirmLeave() {
-    if (!user?.uid) return;
-    dispatch(leaveBoard({ boardId: board.id, uid: user.uid }))
-      .unwrap()
-      .then(() => {
-        navigate('/dashboard/boards', {
-          state: { feedback: 'You left this board.' },
-        });
-      })
-      .catch((message) => setFeedback(message || 'Could not leave board.'));
-    setConfirmingLeave(false);
-  }
-
+  // Navigates back to the hub on success, rather than leaving the viewer on
+  // a workspace page for a board they just deleted — BoardWorkspace's own
+  // generic "board disappeared" effect exists for the case where that
+  // happens from SOMEWHERE ELSE (another session, another member), but here
+  // we already know exactly what happened, so we can navigate immediately
+  // with a precise message instead of waiting for that effect to notice via
+  // the live listener.
   function handleConfirmDeleteBoard() {
     dispatch(deleteCollaborativeBoard({ boardId: board.id }))
       .unwrap()
@@ -122,6 +111,30 @@ function CollaborativePanel({ board }) {
       })
       .catch((message) => setFeedback(message || 'Could not delete board.'));
     setConfirmingDelete(false);
+  }
+
+  function handleApproveLeaveRequest(request) {
+    dispatch(
+      approveLeaveRequest({
+        requestId: request.id,
+        boardId: request.boardId,
+        targetUid: request.requesterUid,
+      }),
+    )
+      .unwrap()
+      .then(() => setFeedback('Member removed'))
+      .catch((message) =>
+        setFeedback(message || 'Could not approve leave request.'),
+      );
+  }
+
+  function handleRejectLeaveRequest(requestId) {
+    dispatch(rejectLeaveRequest({ requestId }))
+      .unwrap()
+      .then(() => setFeedback('Leave request rejected'))
+      .catch((message) =>
+        setFeedback(message || 'Could not reject leave request.'),
+      );
   }
 
   function handleApproveRequest(request) {
@@ -202,33 +215,6 @@ function CollaborativePanel({ board }) {
                 Rename
               </button>
             )}
-            {canLeave &&
-              (confirmingLeave ? (
-                <span className="card-confirm">
-                  <span>Leave this board?</span>
-                  <button
-                    type="button"
-                    onClick={() => setConfirmingLeave(false)}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    className="danger"
-                    onClick={handleConfirmLeave}
-                  >
-                    Leave Board
-                  </button>
-                </span>
-              ) : (
-                <button
-                  type="button"
-                  className="rename-board-btn"
-                  onClick={() => setConfirmingLeave(true)}
-                >
-                  Leave Board
-                </button>
-              ))}
             {isOwner &&
               (confirmingDelete ? (
                 <span className="card-confirm">
@@ -283,6 +269,32 @@ function CollaborativePanel({ board }) {
                   type="button"
                   className="danger"
                   onClick={() => handleRejectRequest(request.id)}
+                >
+                  Reject
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {canApprove && pendingLeaveRequests.length > 0 && (
+        <div className="join-requests">
+          <h3>Pending leave requests</h3>
+          <ul>
+            {pendingLeaveRequests.map((request) => (
+              <li key={request.id}>
+                <span>{request.requesterEmail}</span>
+                <button
+                  type="button"
+                  onClick={() => handleApproveLeaveRequest(request)}
+                >
+                  Approve
+                </button>
+                <button
+                  type="button"
+                  className="danger"
+                  onClick={() => handleRejectLeaveRequest(request.id)}
                 >
                   Reject
                 </button>

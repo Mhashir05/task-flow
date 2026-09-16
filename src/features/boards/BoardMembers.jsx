@@ -1,18 +1,22 @@
 import { useEffect, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
+import { useNavigate } from 'react-router-dom';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../../firebase';
 import {
   getMemberRole,
+  leaveBoard,
   removeMember,
   transferOwnership,
   updateMemberRole,
 } from './boardsSlice';
+import { requestLeaveBoard } from '../leaveRequests/leaveRequestsSlice';
 
 const ROLE_LABEL = { owner: 'Owner', admin: 'Admin', member: 'Member' };
 
 function BoardMembers() {
   const dispatch = useDispatch();
+  const navigate = useNavigate();
   const user = useSelector((state) => state.auth.user);
   const boards = useSelector((state) => state.boards.list);
   const activeBoardId = useSelector((state) => state.boards.activeBoardId);
@@ -33,6 +37,10 @@ function BoardMembers() {
   // step open — same open-confirm pattern as App.jsx's confirmingId for task
   // delete, given how significant this action is.
   const [transferConfirmUid, setTransferConfirmUid] = useState(null);
+  // Self-row only, so a single boolean (not keyed by uid) is enough — same
+  // confirm-step pattern CollaborativePanel.jsx used before this action
+  // moved here.
+  const [confirmingLeave, setConfirmingLeave] = useState(false);
 
   useEffect(() => {
     if (!activeBoard) return;
@@ -115,6 +123,40 @@ function BoardMembers() {
     setTransferConfirmUid(null);
   }
 
+  // Admin-only, direct — navigates back to the hub on success rather than
+  // leaving the viewer on a workspace page for a board they just left, same
+  // as this did when it lived in CollaborativePanel.jsx.
+  function handleConfirmLeave() {
+    if (!activeBoard || !user?.uid) return;
+    dispatch(leaveBoard({ boardId: activeBoard.id, uid: user.uid }))
+      .unwrap()
+      .then(() => {
+        navigate('/dashboard/boards', {
+          state: { feedback: 'You left this board.' },
+        });
+      })
+      .catch((message) => setFeedback(message || 'Could not leave board.'));
+    setConfirmingLeave(false);
+  }
+
+  // Member-only — submits a leaveRequests doc for Owner/Admin review rather
+  // than leaving immediately.
+  function handleRequestLeave() {
+    if (!activeBoard || !user?.uid) return;
+    dispatch(
+      requestLeaveBoard({
+        boardId: activeBoard.id,
+        uid: user.uid,
+        email: user.email,
+      }),
+    )
+      .unwrap()
+      .then(() => setFeedback('Leave request submitted'))
+      .catch((message) =>
+        setFeedback(message || 'Could not submit leave request.'),
+      );
+  }
+
   return (
     <section className="users-feed" aria-labelledby="users-feed-heading">
       <h2 id="users-feed-heading">Team</h2>
@@ -145,11 +187,21 @@ function BoardMembers() {
             const isSelf = member.uid === user?.uid;
             const canManageRoles =
               isCollaborative && myRole === 'owner' && role !== 'owner' && !isSelf;
+            // Ownership can only go to an existing Admin, not a plain
+            // Member — matches transferOwnership's own check in
+            // boardsSlice.js and firestore.rules' isOwnershipTransfer.
+            const canTransferOwnership = canManageRoles && role === 'admin';
             const canRemove =
               isCollaborative &&
               role !== 'owner' &&
               !isSelf &&
               (myRole === 'owner' || (myRole === 'admin' && role === 'member'));
+            // Self-service leave, shown only on the current user's own row.
+            // Admin leaves directly; Member must request Owner/Admin
+            // approval instead; Owner gets neither (unchanged — they must
+            // transferOwnership or deleteCollaborativeBoard).
+            const canLeaveDirect = isSelf && role === 'admin';
+            const canRequestLeave = isSelf && role === 'member';
 
             // Same resolved-name pattern as the header's own
             // displayName/emailFallback and the comments section's
@@ -171,6 +223,42 @@ function BoardMembers() {
                     <span className="role-badge">
                       {ROLE_LABEL[role] ?? role}
                     </span>
+                    {canLeaveDirect &&
+                      (confirmingLeave ? (
+                        <span className="card-confirm">
+                          <span>Leave this board?</span>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmingLeave(false)}
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            className="danger"
+                            onClick={handleConfirmLeave}
+                          >
+                            Leave Board
+                          </button>
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          className="rename-board-btn"
+                          onClick={() => setConfirmingLeave(true)}
+                        >
+                          Leave Board
+                        </button>
+                      ))}
+                    {canRequestLeave && (
+                      <button
+                        type="button"
+                        className="rename-board-btn"
+                        onClick={handleRequestLeave}
+                      >
+                        Request to Leave
+                      </button>
+                    )}
                   </span>
                   <span className="board-member-email">{member.email}</span>
                 </span>
@@ -188,7 +276,7 @@ function BoardMembers() {
                         <option value="admin">Admin</option>
                       </select>
                     )}
-                    {canManageRoles &&
+                    {canTransferOwnership &&
                       (transferConfirmUid === member.uid ? (
                         <span className="card-confirm">
                           <span>Make owner?</span>

@@ -51,12 +51,17 @@ service cloud.firestore {
     // ownerId change, together, which neither of those shapes describes.
     // Gated on uid == before.ownerId (the CURRENT owner, pre-change) —
     // nobody else, including the incoming new owner, can initiate this.
+    // roleOf(before, newOwner) == 'admin' mirrors transferOwnership's own
+    // client-side check in boardsSlice.js: a plain Member must first be
+    // promoted to Admin before they're eligible, so a direct Firestore
+    // write can't bypass that same restriction.
     function isOwnershipTransfer(before, after, uid) {
       let newOwner = after.ownerId;
       let rolesDiff = after.get('roles', {}).diff(before.get('roles', {}));
       return uid == before.ownerId
         && newOwner != before.ownerId
         && newOwner in before.members
+        && roleOf(before, newOwner) == 'admin'
         && after.diff(before).affectedKeys().hasOnly(['ownerId', 'roles'])
         && rolesDiff.addedKeys().size() == 0
         && rolesDiff.removedKeys().size() == 0
@@ -515,6 +520,38 @@ service cloud.firestore {
       // that board's Owner/Admin, consistent with who can already
       // read/update join requests for it above.
       allow delete: if isSignedIn()
+        && roleOf(boardOf(resource.data.boardId), request.auth.uid) in ['owner', 'admin'];
+    }
+
+    // Mirrors joinRequests above, for the opposite direction: a plain
+    // Member requesting to leave a board rather than requesting to join
+    // one. Admins/Owners never create one of these — they leave/remove
+    // directly (leaveBoard / deleteCollaborativeBoard / removeMember),
+    // enforced here by requiring the requester's CURRENT role to be
+    // exactly 'member'.
+    match /leaveRequests/{requestId} {
+      function boardOf(boardId) {
+        return get(/databases/$(database)/documents/boards/$(boardId)).data;
+      }
+
+      allow create: if isSignedIn()
+        && request.resource.data.requesterUid == request.auth.uid
+        && roleOf(boardOf(request.resource.data.boardId), request.auth.uid) == 'member';
+
+      allow read: if isSignedIn()
+        && (
+          resource.data.requesterUid == request.auth.uid
+          || roleOf(boardOf(resource.data.boardId), request.auth.uid) in ['owner', 'admin']
+        );
+
+      // Covers both approve and reject — approve's actual membership
+      // removal happens as a separate write to boards/{boardId}, already
+      // covered by that document's own allow update rule (see
+      // approveLeaveRequest in leaveRequestsSlice.js: the diff shape is
+      // identical to removeMember's, which the existing owner/
+      // isSafeAdminRolesChange branches already permit — no new carve-out
+      // needed there).
+      allow update: if isSignedIn()
         && roleOf(boardOf(resource.data.boardId), request.auth.uid) in ['owner', 'admin'];
     }
   }
