@@ -411,9 +411,22 @@ service cloud.firestore {
       // already have unrestricted status control on any task via the role
       // branch below regardless of creator, so this exists purely to grant
       // the creator-Member case the role branch doesn't cover.
+      //
+      // after.status != 'Done' additionally excludes 'Done' as a target
+      // this carve-out can ever produce — a Member's own-task status write
+      // must land in Review, To Do, or In Progress, never Done directly;
+      // only Owner/Admin (the unconditional role branch above/below, never
+      // gated by this function at all) may set Done. BoardWorkspace.jsx's
+      // handleStatusChange already substitutes 'Review' for 'Done' before
+      // ever dispatching on a Member's behalf, so a legitimate Member
+      // action never actually attempts this write in practice — this is
+      // the independent rules-layer boundary behind that UI substitution,
+      // the same two-layer pattern as every other member-facing
+      // restriction in this file.
       function isCreatorStatusChange(before, after, uid) {
         return after.diff(before).affectedKeys().hasOnly(['status'])
-          && before.userId == uid;
+          && before.userId == uid
+          && after.status != 'Done';
       }
 
       // A Member/Admin's delete request — same null-to-value, self-only

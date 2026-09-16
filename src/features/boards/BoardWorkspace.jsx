@@ -392,17 +392,39 @@ export function BoardWorkspaceInner({ boardId }) {
     setFeedback('Task deleted');
   }
 
+  // A plain Member can directly change status on tasks canManageTaskStatus
+  // already lets them touch (their own, on a collaborative board — see
+  // that function's own creator exception), but never to 'Done' — that
+  // specific target is Owner/Admin-only, regardless of creator. Applied
+  // here (not in canManageTaskStatus) so a Member can still freely move
+  // their own task between To Do/In Progress/Review directly; only the
+  // transition TO 'Done' gets intercepted and redirected to 'Review'
+  // instead of being blocked outright, so the action still does
+  // something useful rather than silently no-op'ing.
   function handleStatusChange(id, newStatus) {
-    dispatch(updateStatus({ id, newStatus }));
-    setFeedback('Task updated');
+    const redirectToReview =
+      boardType === 'collaborative' && myRole === 'member' && newStatus === 'Done';
+    const finalStatus = redirectToReview ? 'Review' : newStatus;
+    dispatch(updateStatus({ id, newStatus: finalStatus }));
+    setFeedback(
+      redirectToReview
+        ? 'Sent to Review — Owner/Admin will mark it Done'
+        : 'Task updated',
+    );
   }
 
   function handleEditTitle(id, newTitle) {
-    dispatch(editTitle({ id, newTitle }));
+    dispatch(editTitle({ id, newTitle }))
+      .unwrap()
+      .catch((message) => setFeedback(message || 'Could not update title.'));
   }
 
   function handleEditDescription(id, newDescription) {
-    dispatch(editDescription({ id, newDescription }));
+    dispatch(editDescription({ id, newDescription }))
+      .unwrap()
+      .catch((message) =>
+        setFeedback(message || 'Could not update description.'),
+      );
   }
 
   function handleStartPublish(taskId) {
@@ -572,6 +594,23 @@ export function BoardWorkspaceInner({ boardId }) {
   }
 
   function canManageTaskStatus(task) {
+    return (
+      boardType !== 'collaborative' ||
+      myRole === 'owner' ||
+      myRole === 'admin' ||
+      task?.userId === user?.uid
+    );
+  }
+
+  // Same creator-based exception as canManageTaskStatus, for a different
+  // action: title/description editing. Kept as its own function (rather
+  // than reusing canManageTaskStatus directly) since the two permissions
+  // are conceptually distinct and could diverge later, even though their
+  // current rule happens to be identical. editTitle/editDescription are
+  // rejected by firestore.rules for anyone this returns false for — no
+  // member carve-out names title/description — so this closes a UI gap
+  // where the fields were previously always enabled, silently failing.
+  function canEditTaskDetails(task) {
     return (
       boardType !== 'collaborative' ||
       myRole === 'owner' ||
@@ -815,6 +854,7 @@ export function BoardWorkspaceInner({ boardId }) {
                       const deleteRequest = task.deleteRequest ?? null;
                       const publishRequest = task.publishRequest ?? null;
                       const canManageStatus = canManageTaskStatus(task);
+                      const canEditDetails = canEditTaskDetails(task);
                       // Legacy fallback: an older task may still only have
                       // the singular `assignee` field from before this was
                       // multi-user — normalized to the new array shape here,
@@ -1106,6 +1146,7 @@ export function BoardWorkspaceInner({ boardId }) {
                               <input
                                 aria-label="Edit task title"
                                 value={task.title}
+                                disabled={!canEditDetails}
                                 onChange={(e) =>
                                   handleEditTitle(task.id, e.target.value)
                                 }
@@ -1113,6 +1154,7 @@ export function BoardWorkspaceInner({ boardId }) {
                               <textarea
                                 aria-label="Edit task description"
                                 value={task.description || ''}
+                                disabled={!canEditDetails}
                                 onChange={(e) =>
                                   handleEditDescription(task.id, e.target.value)
                                 }

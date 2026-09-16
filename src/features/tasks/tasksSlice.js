@@ -36,15 +36,23 @@ export const updateStatus = createAsyncThunk(
 
 export const editTitle = createAsyncThunk(
   'tasks/editTitle',
-  async ({ id, newTitle }) => {
-    await updateDoc(doc(db, 'tasks', id), { title: newTitle });
+  async ({ id, newTitle }, { rejectWithValue }) => {
+    try {
+      await updateDoc(doc(db, 'tasks', id), { title: newTitle });
+    } catch (err) {
+      return rejectWithValue(err.message || 'Could not update title.');
+    }
   },
 );
 
 export const editDescription = createAsyncThunk(
   'tasks/editDescription',
-  async ({ id, newDescription }) => {
-    await updateDoc(doc(db, 'tasks', id), { description: newDescription });
+  async ({ id, newDescription }, { rejectWithValue }) => {
+    try {
+      await updateDoc(doc(db, 'tasks', id), { description: newDescription });
+    } catch (err) {
+      return rejectWithValue(err.message || 'Could not update description.');
+    }
   },
 );
 

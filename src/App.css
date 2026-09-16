@@ -1502,6 +1502,8 @@ input, select, button, textarea {
 /* ── Touch targets (coarse pointers) ───────────────────── */
 @media (pointer: coarse) {
   .view-toggle button,
+  .view-toggle a,
+  .board-scope-toggle a,
   .quest-form input,
   .quest-form select,
   .quest-form button {
@@ -1510,12 +1512,18 @@ input, select, button, textarea {
 
   .card-status,
   .card-confirm button,
-  .card-pill-btn {
+  .card-pill-btn,
+  .publish-picker-select {
     height: 40px;
   }
 
   .card-details input,
   .card-details select {
+    min-height: 40px;
+  }
+
+  .my-board-row,
+  .my-board-row-item .my-board-row {
     min-height: 40px;
   }
 
