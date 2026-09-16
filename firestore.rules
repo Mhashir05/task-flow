@@ -24,13 +24,37 @@ service cloud.firestore {
       return uid in board.members;
     }
 
-    // Approximation of "admin added a new member or removed an existing
-    // one, but did not reassign an existing member's role" — see the note
-    // on the boards/update rule below for the tradeoff this makes.
+    // Approximation of "admin added a new member, or removed an existing
+    // PLAIN MEMBER, but did not reassign an existing member's role" — see
+    // the note on the boards/update rule below for the remaining tradeoff
+    // (a newly-ADDED entry's value can't be verified to be 'member').
+    //
+    // The removal half is tied to `members` shrinking by the SAME uid
+    // (via the list-diff removeAll() pattern isSelfLeave already uses,
+    // since `d.removedKeys()` is a Set and Sets have no index access in
+    // this language — a List obtained from `members.removeAll(...)` does)
+    // specifically so that uid's role BEFORE removal can be looked up and
+    // checked. Without this, an admin could remove ANY single roles entry
+    // — including the Owner's or another Admin's — since the original
+    // version only counted key changes, never which uid or role they
+    // belonged to. Requiring the members-array diff to match 1-for-1 with
+    // the roles-key diff also closes a second, narrower gap: removing
+    // just the roles key while leaving the uid in `members` would have
+    // silently demoted them to 'member' via roleOf()'s own fallback,
+    // without ever registering as a `changedKeys()` entry.
     function isSafeAdminRolesChange(before, after) {
       let d = after.get('roles', {}).diff(before.get('roles', {}));
+      let removedMembers = before.members.removeAll(after.get('members', []));
       return d.changedKeys().size() == 0
-        && (d.addedKeys().size() + d.removedKeys().size()) <= 1;
+        && (d.addedKeys().size() + d.removedKeys().size()) <= 1
+        && (
+          d.removedKeys().size() == 0
+          || (
+            removedMembers.size() == 1
+            && d.removedKeys().hasOnly(removedMembers)
+            && roleOf(before, removedMembers[0]) == 'member'
+          )
+        );
     }
 
     // A write that doesn't touch `field` at all is unaffected by this check;
@@ -243,12 +267,15 @@ service cloud.firestore {
       // Deleting exactly one comment (array shrinks by exactly one, with
       // nothing added — ruling out a "remove one, add a different one"
       // swap dressed up as a delete). Allowed if the removed comment
-      // belongs to the actor (self-delete) or the actor is owner/admin
-      // (moderation delete). The owner/admin case is already covered
-      // unconditionally by the role branch in allow update below, so this
-      // half of the OR is redundant in practice today — kept anyway so
-      // this function is correct and reusable on its own terms, per spec,
-      // rather than silently depending on being combined with that branch.
+      // belongs to the actor (self-delete), the actor is the board's
+      // Owner (moderation of anyone, including their own — unrestricted),
+      // or the actor is an Admin moderating someone who ISN'T the Owner.
+      // An Admin can no longer delete the Owner's own comment — this is
+      // NOT redundant with the unconditional owner/admin role branch in
+      // allow update below the way the plain owner/admin case used to be:
+      // isAdminDeletingOwnerComment there explicitly excludes exactly this
+      // one shape from that blanket grant, so it's forced through here,
+      // where an Admin now fails this check for the Owner's comments.
       function isCommentDelete(before, after, board, uid) {
         let beforeComments = before.get('comments', []);
         let afterComments = after.get('comments', []);
@@ -258,39 +285,80 @@ service cloud.firestore {
           && beforeComments.size() == afterComments.size() + 1
           && removed.size() == 1
           && added.size() == 0
-          && (removed[0].uid == uid || roleOf(board, uid) in ['owner', 'admin']);
+          && (
+            removed[0].uid == uid
+            || roleOf(board, uid) == 'owner'
+            || (roleOf(board, uid) == 'admin' && roleOf(board, removed[0].uid) != 'owner')
+          );
       }
 
-      // A private/collaborative move changes ONLY boardId — nothing else.
-      // That specific shape requires BOTH: (a) creator-only, regardless of
-      // role — even an Owner/Admin must not be able to relocate a task
-      // someone else created — AND (b) the actor must hold owner/admin role
-      // on the TARGET board (after.boardId), not just the current one.
+      // The unconditional owner/admin branch in allow update below
+      // normally covers comment deletion too — without this carve-out,
+      // isCommentDelete's own owner/admin logic above would be completely
+      // unreachable for that branch's actors (exactly the redundancy its
+      // old comment used to note). This pulls exactly ONE shape out of
+      // that blanket grant — an Admin deleting a comment authored by the
+      // board's Owner — so it falls through to isCommentDelete's own
+      // OR-arm instead, where it now correctly fails. Every other Admin
+      // write (any other field, or deleting anyone else's comment) is
+      // completely unaffected: this only returns true for that one exact
+      // shape, mirrored against isCommentDelete's own detection so the
+      // two functions can never disagree about what counts as a comment
+      // delete.
+      function isAdminDeletingOwnerComment(before, after, board, uid) {
+        let beforeComments = before.get('comments', []);
+        let afterComments = after.get('comments', []);
+        let removed = beforeComments.removeAll(afterComments);
+        return roleOf(board, uid) == 'admin'
+          && after.diff(before).affectedKeys().hasOnly(['comments'])
+          && beforeComments.size() == afterComments.size() + 1
+          && removed.size() == 1
+          && roleOf(board, removed[0].uid) == 'owner';
+      }
+
+      // A private/collaborative move requires BOTH: (a) creator-only,
+      // regardless of role — even an Owner/Admin must not be able to
+      // relocate a task someone else created — AND (b) the actor must hold
+      // owner/admin role on the TARGET board (after.boardId), not just the
+      // current one.
       //
       // (b) closes a gap found while adding the publish-request workflow:
       // without it, a private board's owner (always also its own tasks'
       // creator, satisfying (a) trivially) could set boardId directly to
       // ANY board — including one where their own role is only 'member' —
       // completely bypassing the requestPublish/approve flow that's
-      // supposed to gate exactly that case. Requiring owner/admin on the
-      // target closes this for every path that could produce a boardId-only
-      // write (the current-board owner/admin branch below, AND
-      // isCreatorBoardMove), without needing to duplicate the check into
-      // each one individually. Costs one extra get() on the target board,
-      // evaluated only for a boardId-only write.
+      // supposed to gate exactly that case.
       //
-      // A write touching boardId ALONGSIDE any other field, or not touching
-      // boardId at all, is unaffected by this function (returns true) and
-      // falls through to the normal owner/admin / member-carve-out branches
-      // below as usual. This does NOT apply to isPublishApprove below — that
-      // branch is a completely separate grant for the TARGET board's Owner,
-      // who by definition isn't isTaskBoardMember of the current board at
-      // all, so this function (scoped inside that AND-group) never runs for
-      // them; isPublishApprove has its own, independent correctness checks.
+      // Trigger vs. shape are deliberately separate checks — hasAny(...)
+      // decides whether this function applies AT ALL (any write that
+      // touches boardId, however it's bundled), while hasOnly(...) is one
+      // of the things the approved shape must satisfy. An earlier version
+      // collapsed both into a single hasOnly(['boardId']) check, which
+      // made the function vacuously return true — skipping (a) and (b)
+      // entirely — for any write that touched boardId ALONGSIDE some other
+      // field (e.g. {boardId, title} in the same write): affectedKeys()
+      // then had more than just 'boardId' in it, hasOnly(['boardId'])
+      // was false, and `!false` made the whole function true. That let an
+      // Owner/Admin of the CURRENT board relocate any task — including one
+      // they didn't create, to a board they hold no role on at all — just
+      // by bundling a trivial edit to any other field alongside boardId.
+      // Now, ANY write touching boardId must satisfy the full (a)+(b)
+      // check, bundled or not — there is no longer a bundling escape.
+      //
+      // A write not touching boardId at all is unaffected (hasAny is
+      // false, so `!false` makes the function true) and falls through to
+      // the normal owner/admin / member-carve-out branches below as usual.
+      // This does NOT apply to isPublishApprove below — that branch is a
+      // completely separate grant for the TARGET board's Owner, who by
+      // definition isn't isTaskBoardMember of the current board at all, so
+      // this function (scoped inside that AND-group) never runs for them;
+      // isPublishApprove has its own, independent correctness checks.
       function isSafeBoardMove(before, after, uid) {
-        return !after.diff(before).affectedKeys().hasOnly(['boardId'])
+        let affected = after.diff(before).affectedKeys();
+        return !affected.hasAny(['boardId'])
           || (
-            before.userId == uid
+            affected.hasOnly(['boardId'])
+            && before.userId == uid
             && roleOf(
                  get(/databases/$(database)/documents/boards/$(after.boardId)).data,
                  uid
@@ -412,7 +480,7 @@ service cloud.firestore {
       // restricted to EXACTLY one of the safe shapes above (comment append/
       // edit/delete, a status-request, a creator-only boardId move, a
       // creator-only direct status change, or a delete request); every
-      // other field (title, description, assignee, ...) — and status/
+      // other field (title, description, assignees, ...) — and status/
       // boardId/deleteRequest changes OUTSIDE those specific shapes — is
       // off-limits to them entirely. Because affectedKeys() only contains
       // fields whose VALUE actually changed, a member cannot bundle a real
@@ -420,7 +488,7 @@ service cloud.firestore {
       // to affectedKeys(), which fails every hasOnly([...]) check
       // immediately — there is no shape of request that changes an
       // off-limits field and still satisfies a member branch. This is why
-      // `assignee` needed no rule of its own: it's Owner/Admin-only
+      // `assignees` needed no rule of its own: it's Owner/Admin-only
       // automatically, simply by never being named in any member carve-
       // out's hasOnly() list. Private boards are unaffected: a private
       // board's sole member has no roles map, and roleOf()'s fallback
@@ -447,7 +515,15 @@ service cloud.firestore {
           (
             isTaskBoardMember(resource.data.boardId, request.auth.uid)
             && (
-              roleOf(boardOfTask(resource.data.boardId), request.auth.uid) in ['owner', 'admin']
+              (
+                roleOf(boardOfTask(resource.data.boardId), request.auth.uid) in ['owner', 'admin']
+                && !isAdminDeletingOwnerComment(
+                     resource.data,
+                     request.resource.data,
+                     boardOfTask(resource.data.boardId),
+                     request.auth.uid
+                   )
+              )
               || isMemberCommentAppend(resource.data, request.resource.data)
               || isMemberStatusRequest(resource.data, request.resource.data)
               || isOwnCommentEdit(resource.data, request.resource.data)

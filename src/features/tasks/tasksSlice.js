@@ -75,15 +75,18 @@ export const moveTaskToPrivate = createAsyncThunk(
 // Owner/Admin only, enforced by the caller hiding/disabling the UI for a
 // plain Member (same "client stopgap, real boundary is firestore.rules"
 // convention as updateMemberRole/removeMember in boardsSlice.js) — the
-// rules layer already excludes `assignee` from every Member write shape,
+// rules layer already excludes `assignees` from every Member write shape,
 // so a Member calling this directly would be rejected regardless of the UI.
-// assigneeUid/assigneeEmail null clears the assignment back to Unassigned.
-export const assignTask = createAsyncThunk(
-  'tasks/assignTask',
-  async ({ taskId, assigneeUid, assigneeEmail }) => {
-    await updateDoc(doc(db, 'tasks', taskId), {
-      assignee: assigneeUid ? { uid: assigneeUid, email: assigneeEmail } : null,
-    });
+// `assignees` is the FULL desired array of {uid, email}, not a delta —
+// the caller (BoardWorkspace.jsx) computes the new array by toggling one
+// member in/out of the current selection and sends the whole thing in one
+// write, rather than an arrayUnion/arrayRemove pair, which gets awkward
+// once the elements are objects rather than primitives (arrayRemove needs
+// an exact object match, easy to get subtly wrong across re-renders).
+export const setTaskAssignees = createAsyncThunk(
+  'tasks/setTaskAssignees',
+  async ({ taskId, assignees }) => {
+    await updateDoc(doc(db, 'tasks', taskId), { assignees });
   },
 );
 

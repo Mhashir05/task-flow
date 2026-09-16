@@ -21,7 +21,7 @@ import {
   requestStatusChange,
   approveStatusRequest,
   rejectStatusRequest,
-  assignTask,
+  setTaskAssignees,
   requestDelete,
   approveDeleteRequest,
   rejectDeleteRequest,
@@ -489,13 +489,19 @@ export function BoardWorkspaceInner({ boardId }) {
     );
   }
 
-  function handleAssignTask(taskId, assigneeUid) {
-    if (!assigneeUid) {
-      dispatch(assignTask({ taskId, assigneeUid: null, assigneeEmail: null }));
-      return;
-    }
-    const assigneeEmail = memberProfiles[assigneeUid]?.email ?? assigneeUid;
-    dispatch(assignTask({ taskId, assigneeUid, assigneeEmail }));
+  // `currentAssignees` is the already-normalized (legacy-fallback-applied)
+  // array for this task — see the `assignees` derivation at the top of the
+  // task-render loop — so toggling here never has to special-case the old
+  // singular `assignee` shape itself.
+  function handleToggleAssignee(taskId, currentAssignees, uid) {
+    const isAssigned = currentAssignees.some((a) => a.uid === uid);
+    const newAssignees = isAssigned
+      ? currentAssignees.filter((a) => a.uid !== uid)
+      : [
+          ...currentAssignees,
+          { uid, email: memberProfiles[uid]?.email ?? uid },
+        ];
+    dispatch(setTaskAssignees({ taskId, assignees: newAssignees }));
   }
 
   function handleRequestStatusChange(taskId, requestedStatus) {
@@ -809,6 +815,13 @@ export function BoardWorkspaceInner({ boardId }) {
                       const deleteRequest = task.deleteRequest ?? null;
                       const publishRequest = task.publishRequest ?? null;
                       const canManageStatus = canManageTaskStatus(task);
+                      // Legacy fallback: an older task may still only have
+                      // the singular `assignee` field from before this was
+                      // multi-user — normalized to the new array shape here,
+                      // once, so every read below (badge + checkbox list)
+                      // only ever deals with `assignees`.
+                      const assignees =
+                        task.assignees ?? (task.assignee ? [task.assignee] : []);
 
                       return (
                         <div
@@ -919,12 +932,16 @@ export function BoardWorkspaceInner({ boardId }) {
                             <span className="priority-badge">
                               {task.priority || 'Medium'}
                             </span>
-                            {boardType === 'collaborative' && task.assignee && (
+                            {boardType === 'collaborative' && assignees.length > 0 && (
                               <span
                                 className="assignee-badge"
-                                title={`Assigned to ${task.assignee.email}`}
+                                title={`Assigned to ${assignees
+                                  .map((a) => a.email)
+                                  .join(', ')}`}
                               >
-                                {task.assignee.email}
+                                {assignees.length <= 3
+                                  ? assignees.map((a) => a.email).join(', ')
+                                  : `${assignees.length} assigned`}
                               </span>
                             )}
                             {isTaskCreator && !isPrivateTask && (
@@ -1118,21 +1135,58 @@ export function BoardWorkspaceInner({ boardId }) {
                               </select>
 
                               {boardType === 'collaborative' && (
-                                <select
-                                  aria-label={`Assignee for ${task.title}`}
-                                  value={task.assignee?.uid ?? ''}
+                                <div className="assignee-summary">
+                                  {assignees.length === 0 ? (
+                                    <span className="assignee-summary-empty">
+                                      Unassigned
+                                    </span>
+                                  ) : (
+                                    <>
+                                      <span className="assignee-summary-label">
+                                        Assigned to:
+                                      </span>
+                                      {assignees.map((a) => (
+                                        <span
+                                          key={a.uid}
+                                          className="assignee-summary-pill"
+                                        >
+                                          {a.email}
+                                        </span>
+                                      ))}
+                                    </>
+                                  )}
+                                </div>
+                              )}
+
+                              {boardType === 'collaborative' && (
+                                <fieldset
+                                  className="assignee-checklist"
                                   disabled={!canAssign}
-                                  onChange={(e) =>
-                                    handleAssignTask(task.id, e.target.value || null)
-                                  }
                                 >
-                                  <option value="">Unassigned</option>
-                                  {(board?.members ?? []).map((uid) => (
-                                    <option key={uid} value={uid}>
+                                  <legend>Assignees</legend>
+                                  {(board?.members ?? [])
+                                    .filter(
+                                      (uid) => getMemberRole(board, uid) !== 'owner',
+                                    )
+                                    .map((uid) => (
+                                    <label key={uid}>
+                                      <input
+                                        type="checkbox"
+                                        checked={assignees.some(
+                                          (a) => a.uid === uid,
+                                        )}
+                                        onChange={() =>
+                                          handleToggleAssignee(
+                                            task.id,
+                                            assignees,
+                                            uid,
+                                          )
+                                        }
+                                      />
                                       {memberProfiles[uid]?.email ?? uid}
-                                    </option>
+                                    </label>
                                   ))}
-                                </select>
+                                </fieldset>
                               )}
 
                               <div className="task-comments">
@@ -1144,10 +1198,15 @@ export function BoardWorkspaceInner({ boardId }) {
                                   {comments.map((comment, i) => {
                                     const isAuthor = comment.uid === user?.uid;
                                     const canEditComment = isAuthor;
+                                    // Admin's moderation-delete is blocked
+                                    // for the Owner's own comments — only
+                                    // the Owner can remove those (self or
+                                    // moderation-of-anyone-else, unchanged).
                                     const canDeleteComment =
                                       isAuthor ||
                                       myRole === 'owner' ||
-                                      myRole === 'admin';
+                                      (myRole === 'admin' &&
+                                        getMemberRole(board, comment.uid) !== 'owner');
                                     const isEditingThis =
                                       editingComment?.taskId === task.id &&
                                       editingComment?.uid === comment.uid &&
