@@ -94,14 +94,24 @@ service cloud.firestore {
         && after.roles[before.ownerId] == 'admin';
     }
 
-    // A member voluntarily leaving: members shrinks by EXACTLY the acting
-    // user's own uid (list.removeAll() proves this the same value-based way
-    // isOwnCommentEdit/isCommentDelete already do on tasks — see there for
-    // why that's the right tool), and roles loses exactly that uid's own
-    // key — nothing else in the document changes. Blocked for the board's
-    // ownerId specifically: the Owner must transferOwnership or
-    // deleteCollaborativeBoard instead, never just disappear from `members`
-    // while still being named as owner elsewhere in the document.
+    // An Admin voluntarily leaving directly: members shrinks by EXACTLY the
+    // acting user's own uid (list.removeAll() proves this the same
+    // value-based way isOwnCommentEdit/isCommentDelete already do on tasks
+    // — see there for why that's the right tool), and roles loses exactly
+    // that uid's own key — nothing else in the document changes.
+    //
+    // roleOf(before, uid) == 'admin' is required, not just uid !=
+    // before.ownerId — a plain Member must go through the leaveRequests
+    // request/approve workflow instead (see leaveRequestsSlice.js and the
+    // leaveRequests match block below), matching the app's own design
+    // (BoardMembers.jsx only renders the direct "Leave Board" button for
+    // role === 'admin'; a Member only ever sees "Request to Leave").
+    // Confirmed via tests/firestore.rules.test.js that without this check,
+    // a Member could bypass that approval workflow entirely with a raw
+    // write matching this same shape — uid != before.ownerId alone doesn't
+    // distinguish Admin from Member, only from Owner. The ownerId check is
+    // kept anyway as defense-in-depth (redundant once admin-only is
+    // required, since the Owner is never 'admin', but free to keep).
     function isSelfLeave(before, after, uid) {
       let beforeMembers = before.members;
       let afterMembers = after.get('members', []);
@@ -109,6 +119,7 @@ service cloud.firestore {
       let addedMembers = afterMembers.removeAll(beforeMembers);
       let rolesDiff = after.get('roles', {}).diff(before.get('roles', {}));
       return uid != before.ownerId
+        && roleOf(before, uid) == 'admin'
         && after.diff(before).affectedKeys().hasOnly(['members', 'roles'])
         && removedMembers.size() == 1
         && removedMembers[0] == uid
