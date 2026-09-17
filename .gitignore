@@ -15,6 +15,14 @@ dist-ssr
 # Local env files (Firebase config); .env.example is committed
 .env
 
+# Firebase service account keys (used only by scripts/seed-dummy-data.mjs)
+# — grants full admin access to the Firebase project, must never be
+# committed. Matches Firebase Console's default download filename pattern,
+# plus a couple of likely renames as a safety net.
+*-firebase-adminsdk-*.json
+*serviceAccount*.json
+*service-account*.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
