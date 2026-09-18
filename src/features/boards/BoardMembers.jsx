@@ -55,6 +55,19 @@ function BoardMembers() {
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const sentinelRef = useRef(null);
   const revealTimeoutRef = useRef(null);
+  // Per-row "extra dummyjson details" state: uid -> { status: 'loading' |
+  // 'done' | 'error', company?, city?, phone? }. A REAL fetch, not the
+  // synthetic batch-reveal delay above — see fetchRowDetails below.
+  const [rowDetails, setRowDetails] = useState({});
+  // uids that have already triggered a fetch (successful, failed, or
+  // in-flight) — checked before ever calling fetchRowDetails, so scrolling
+  // a row out of view and back never refetches, and the shared observer
+  // below only needs to fire the trigger once per row, ever.
+  const triggeredUidsRef = useRef(new Set());
+  // One shared IntersectionObserver instance reused for every member row,
+  // rather than one instance per row — every row uses identical trigger
+  // logic, so there's no reason to pay for N observer instances.
+  const rowObserverRef = useRef(null);
 
   useEffect(() => {
     if (!activeBoard) return;
@@ -66,6 +79,12 @@ function BoardMembers() {
           uid,
           email: snap.exists() ? snap.data().email : uid,
           displayName: snap.exists() ? snap.data().displayName : '',
+          // Only present on users seeded by scripts/seed-dummy-data.mjs
+          // AFTER it started stamping this field — used below to fetch
+          // extra dummyjson profile details per-row. undefined for every
+          // other member, which the per-row observer treats as "nothing
+          // to fetch" rather than a fetchable-but-missing id.
+          dummyjsonId: snap.exists() ? snap.data().dummyjsonId : undefined,
         })),
       ),
     )
@@ -145,6 +164,77 @@ function BoardMembers() {
       if (revealTimeoutRef.current) {
         clearTimeout(revealTimeoutRef.current);
       }
+    };
+  }, []);
+
+  // GENUINE network call — unlike REVEAL_DELAY_MS above, this actually
+  // hits dummyjson.com and is visible in the browser's Network tab. Fires
+  // at most once per uid (guarded by triggeredUidsRef, checked before
+  // anything else runs) regardless of how many times the row scrolls in
+  // and out of view.
+  async function fetchRowDetails(uid, dummyjsonId) {
+    if (triggeredUidsRef.current.has(uid)) return;
+    triggeredUidsRef.current.add(uid);
+    setRowDetails((prev) => ({ ...prev, [uid]: { status: 'loading' } }));
+
+    try {
+      const res = await fetch(`https://dummyjson.com/users/${dummyjsonId}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setRowDetails((prev) => ({
+        ...prev,
+        [uid]: {
+          status: 'done',
+          company: data.company?.name,
+          city: data.address?.city,
+          phone: data.phone,
+        },
+      }));
+    } catch (err) {
+      // Per-row failure only — no error banner, this one row simply shows
+      // no extra details, same as a member with no dummyjsonId at all.
+      console.error(
+        `BoardMembers: could not fetch dummyjson details for uid ${uid}:`,
+        err.message,
+      );
+      setRowDetails((prev) => ({ ...prev, [uid]: { status: 'error' } }));
+    }
+  }
+
+  // Lazily creates the ONE shared observer instance on first use, rather
+  // than in a useEffect keyed to the member list — a row's ref callback
+  // (attachRowObserver below) only ever fires once, at that row's own DOM
+  // mount, so there's no repeated list to re-scan the way the sentinel
+  // above has to on every reveal.
+  function getRowObserver() {
+    if (!rowObserverRef.current) {
+      rowObserverRef.current = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((entry) => {
+            if (!entry.isIntersecting) return;
+            rowObserverRef.current.unobserve(entry.target);
+            const { uid, dummyjsonId } = entry.target.dataset;
+            if (dummyjsonId) fetchRowDetails(uid, dummyjsonId);
+          });
+        },
+        { rootMargin: '100px' },
+      );
+    }
+    return rowObserverRef.current;
+  }
+
+  // Attached only to rows that actually have a dummyjsonId (see the JSX
+  // below) — a member without one is never observed at all, so there's no
+  // wasted request and no error state for members this feature simply
+  // doesn't apply to yet (see the Step 1 investigation note above
+  // seedUsers' dummyjsonId field).
+  function attachRowObserver(el) {
+    if (el) getRowObserver().observe(el);
+  }
+
+  useEffect(() => {
+    return () => {
+      rowObserverRef.current?.disconnect();
     };
   }, []);
 
@@ -276,8 +366,19 @@ function BoardMembers() {
                 ? member.displayName
                 : emailFallback;
 
+            const details = rowDetails[member.uid];
+            const extraDetailsText = details?.status === 'done'
+              ? [details.company, details.city, details.phone].filter(Boolean).join(' · ')
+              : '';
+
             return (
-              <li key={member.uid} className="board-member-row">
+              <li
+                key={member.uid}
+                className="board-member-row"
+                ref={member.dummyjsonId ? attachRowObserver : undefined}
+                data-uid={member.uid}
+                data-dummyjson-id={member.dummyjsonId ?? ''}
+              >
                 <span className="board-member-identity">
                   <span className="board-member-name">
                     {memberDisplayName}
@@ -322,6 +423,16 @@ function BoardMembers() {
                     )}
                   </span>
                   <span className="board-member-email">{member.email}</span>
+                  {details?.status === 'loading' && (
+                    <span className="board-member-extra-details">
+                      Loading details&hellip;
+                    </span>
+                  )}
+                  {details?.status === 'done' && extraDetailsText && (
+                    <span className="board-member-extra-details">
+                      {extraDetailsText}
+                    </span>
+                  )}
                 </span>
                 {(canManageRoles || canRemove) && (
                   <span className="board-member-actions">

@@ -181,6 +181,13 @@ async function seedUsers() {
         uid: userRecord.uid,
         email: userRecord.email,
         displayName,
+        // The dummyjson source id — added specifically so BoardMembers.jsx's
+        // per-row "extra details" fetch (dummyjson.com/users/{id}) has a
+        // reliable id to call. Users seeded BEFORE this field existed have
+        // no way to be matched back to their dummyjson record (email/name
+        // matching would be fragile and occasionally wrong), so that
+        // feature stays inactive for them until the board is reseeded.
+        dummyjsonId: du.id,
         createdAt: FieldValue.serverTimestamp(),
       });
 

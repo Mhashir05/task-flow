@@ -1429,6 +1429,18 @@ input, select, button, textarea {
   white-space: nowrap;
 }
 
+/* Per-row dummyjson extra details (company/city/phone) — small, secondary
+   text below the email, styled a step quieter than it since this is
+   incidental demo data, not part of the member's actual identity. */
+.board-member-extra-details {
+  font-size: var(--fs-meta);
+  font-style: italic;
+  color: var(--text-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .role-badge {
   font-size: var(--fs-meta);
   font-weight: var(--fw-medium);
