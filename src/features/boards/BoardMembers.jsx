@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useNavigate } from 'react-router-dom';
 import { doc, getDoc } from 'firebase/firestore';
@@ -13,6 +13,9 @@ import {
 import { requestLeaveBoard } from '../leaveRequests/leaveRequestsSlice';
 
 const ROLE_LABEL = { owner: 'Owner', admin: 'Admin', member: 'Member' };
+// Purely a demo/UX touch — no real fetch happens for a revealed batch, this
+// just makes the existing in-memory pagination feel like it's loading.
+const REVEAL_DELAY_MS = 650;
 
 function BoardMembers() {
   const dispatch = useDispatch();
@@ -41,6 +44,17 @@ function BoardMembers() {
   // confirm-step pattern CollaborativePanel.jsx used before this action
   // moved here.
   const [confirmingLeave, setConfirmingLeave] = useState(false);
+  // Progressive rendering over the already-in-memory filteredMembers array
+  // — no new Firestore reads involved, purely how many of it get rendered
+  // at once. Starts at 10 and grows by 10 each time the sentinel below
+  // scrolls into view.
+  const [visibleCount, setVisibleCount] = useState(10);
+  // True for the artificial REVEAL_DELAY_MS window between the sentinel
+  // triggering and the next batch actually appearing — see the effect
+  // below for why this doubles as the overlapping-trigger guard.
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const sentinelRef = useRef(null);
+  const revealTimeoutRef = useRef(null);
 
   useEffect(() => {
     if (!activeBoard) return;
@@ -93,6 +107,46 @@ function BoardMembers() {
     const name = (member.displayName ?? '').toLowerCase();
     return email.includes(query) || name.includes(query);
   });
+
+  const visibleMembers = filteredMembers.slice(0, visibleCount);
+  const hasMoreMembers = visibleCount < filteredMembers.length;
+
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel || !hasMoreMembers) return undefined;
+
+    // isLoadingMore is in this effect's own dependency array, so this
+    // closure is always current — never stale — meaning the in-callback
+    // check below is safe on its own; recreating the observer on every
+    // isLoadingMore toggle is negligible at this scale (dozens of rows).
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries[0].isIntersecting || isLoadingMore) return;
+
+        setIsLoadingMore(true);
+        revealTimeoutRef.current = setTimeout(() => {
+          setVisibleCount((c) => Math.min(c + 10, filteredMembers.length));
+          setIsLoadingMore(false);
+          revealTimeoutRef.current = null;
+        }, REVEAL_DELAY_MS);
+      },
+      { rootMargin: '200px' },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMoreMembers, filteredMembers.length, isLoadingMore]);
+
+  // Unmount-only cleanup for the setTimeout above — separate from the
+  // observer effect's own cleanup (which also runs on every re-run, not
+  // just unmount) so navigating away mid-delay can't fire setVisibleCount/
+  // setIsLoadingMore on an unmounted component.
+  useEffect(() => {
+    return () => {
+      if (revealTimeoutRef.current) {
+        clearTimeout(revealTimeoutRef.current);
+      }
+    };
+  }, []);
 
   function handleRoleChange(targetUid, newRole) {
     if (!activeBoard) return;
@@ -170,7 +224,14 @@ function BoardMembers() {
           type="text"
           className="member-search"
           value={searchText}
-          onChange={(e) => setSearchText(e.target.value)}
+          onChange={(e) => {
+            setSearchText(e.target.value);
+            // A new search should start paginated too, rather than
+            // dumping every match at once just because visibleCount
+            // happened to already be higher from browsing the unfiltered
+            // list.
+            setVisibleCount(10);
+          }}
           placeholder="Search members…"
           aria-label="Search team members"
         />
@@ -182,7 +243,7 @@ function BoardMembers() {
 
       {activeBoard && !loading && !error && filteredMembers.length > 0 && (
         <ul>
-          {filteredMembers.map((member) => {
+          {visibleMembers.map((member) => {
             const role = getMemberRole(activeBoard, member.uid) ?? 'member';
             const isSelf = member.uid === user?.uid;
             const canManageRoles =
@@ -316,6 +377,14 @@ function BoardMembers() {
               </li>
             );
           })}
+          {hasMoreMembers &&
+            (isLoadingMore ? (
+              // Same bare "Loading…" text style already used above for the
+              // member list's own initial load, for consistency.
+              <li aria-live="polite">Loading more members&hellip;</li>
+            ) : (
+              <li ref={sentinelRef} className="board-members-sentinel" aria-hidden="true" />
+            ))}
         </ul>
       )}
 

@@ -1397,6 +1397,14 @@ input, select, button, textarea {
   border-bottom: none;
 }
 
+/* Progressive-rendering trigger for the Team tab's member list — empty on
+   purpose (IntersectionObserver only needs its layout position), given a
+   small explicit height so it reliably has one to observe rather than
+   collapsing to 0px. */
+.board-members-sentinel {
+  height: 1px;
+}
+
 .board-member-identity {
   display: flex;
   flex-direction: column;

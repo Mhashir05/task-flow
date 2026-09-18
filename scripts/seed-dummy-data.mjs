@@ -1,6 +1,6 @@
 // ONE-TIME dev/testing utility — NOT part of the app itself, never imported
 // by any app code. Populates Firestore with realistic test data pulled from
-// dummyjson.com: 10 real Firebase Auth users (with their private boards,
+// dummyjson.com: 100 real Firebase Auth users (with their private boards,
 // exactly like a normal signup), one collaborative test board with roles
 // spread across those users, ~25 tasks, and a handful of comments per task.
 //
@@ -40,8 +40,24 @@ import { getAuth } from 'firebase-admin/auth';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 
 const DUMMYJSON_BASE = 'https://dummyjson.com';
-const USER_COUNT = 10;
+const USER_COUNT = 100;
+// user 1 = owner, the next ADMIN_COUNT = admin, the rest = member. Kept as
+// a named constant (used by both seedBoard and the final summary's display
+// logic below) rather than a magic slice bound, so the two can't drift
+// apart the way a hardcoded number in each place could.
+const ADMIN_COUNT = 5;
+// Left at 25 rather than scaled up with USER_COUNT — this board is a demo
+// of the task/comment/assignee features, not a simulation of realistic
+// per-user task volume, and 25 tasks already exercises every status/
+// priority/assignee/comment path with 100 possible creators/assignees to
+// draw from. Bumping this to match USER_COUNT would just mean 4x the
+// Firestore writes for a portfolio/demo board with no proportional benefit
+// to what it actually demonstrates.
 const TODO_COUNT = 25;
+// Unchanged for the same reason, and because the comment-pool is already
+// reused with replacement (see randomItem in seedComments below) rather
+// than requiring one unique comment per slot — it doesn't need to grow
+// just because TODO_COUNT didn't.
 const COMMENT_POOL_SIZE = 50;
 const SEED_PASSWORD = 'Test1234';
 
@@ -200,12 +216,14 @@ async function seedBoard(seededUsers) {
     throw new Error('No users were seeded — cannot create a test board without an owner.');
   }
 
-  // user 1 = owner, users 2-3 = admin, users 4+ = member — sliced rather
-  // than hardcoded to 10 so this still works sensibly if fewer than 10
-  // users were actually created (e.g. re-running against existing data).
+  // user 1 = owner, the next ADMIN_COUNT users = admin, everyone else =
+  // member — sliced off ADMIN_COUNT rather than hardcoded indices, so this
+  // still works sensibly if fewer than USER_COUNT users were actually
+  // created (e.g. re-running against existing data, or dummyjson emails
+  // colliding more than expected).
   const owner = seededUsers[0];
-  const admins = seededUsers.slice(1, 3);
-  const members = seededUsers.slice(3);
+  const admins = seededUsers.slice(1, 1 + ADMIN_COUNT);
+  const members = seededUsers.slice(1 + ADMIN_COUNT);
 
   const roles = { [owner.uid]: 'owner' };
   admins.forEach((u) => {
@@ -376,7 +394,7 @@ async function main() {
   console.log('Seeded accounts:');
   seededUsers.forEach((u, i) => {
     // eslint-disable-next-line no-nested-ternary
-    const role = i === 0 ? 'owner' : i < 3 ? 'admin' : 'member';
+    const role = i === 0 ? 'owner' : i < 1 + ADMIN_COUNT ? 'admin' : 'member';
     console.log(`  ${i + 1}. ${u.email}  (${role} on Dummy Test Board)`);
   });
 }
